@@ -1,0 +1,54 @@
+# Meu Treino
+
+App web mobile para registrar treinos, cargas, séries, repetições, frequência e evolução.
+
+## Como abrir
+
+- Para visualizar localmente, rode a pasta por um servidor web (por exemplo, `npx serve .`).
+- Para usar como PWA instalável e ativar login/sincronização, publique em HTTPS.
+
+## O que já funciona
+
+- Treino do dia e rotina semanal.
+- Criação e exclusão de treinos personalizados, com dia, grupo, duração, exercícios, séries, repetições, carga e descanso.
+- Registro de carga e repetições por série.
+- Ajuste rápido de carga em passos de 2,5 kg.
+- Sugestão automática de progressão de carga usando o último treino registrado.
+- Marcação de séries concluídas e descanso automático conforme o exercício, com `+30s`, pular e vibração ao finalizar em aparelhos compatíveis.
+- Inclusão de séries extras.
+- Anotações por exercício durante o treino.
+- Cronômetro do treino.
+- Histórico salvo imediatamente no próprio aparelho, inclusive sem internet.
+- Integração preparada com Firebase Authentication + Cloud Firestore.
+- Login com Google e sincronização automática entre aparelhos quando o Firebase estiver configurado.
+- Progressão real de carga, volume e repetições, sem misturar dados fictícios às métricas do usuário.
+- Histórico individual por exercício, gráfico, recordes, volume mensal, sequência e consistência.
+- Perfil físico editável com peso, altura, objetivo, foto e dias de treino.
+- Configurações de descanso automático, tempo padrão e vibração.
+- Conta Google como sincronização automática dos dados no Firestore, sem exportação manual.
+- Interface responsiva e instalável como PWA.
+- Rolagem mobile por toque sem barras artificiais e sem barra falsa de status do celular.
+
+## Ativar o Firebase
+
+1. No Firebase Console, crie/abra o projeto e registre um **App Web**.
+2. Copie o objeto `firebaseConfig` fornecido pelo console para `firebase-config.js`.
+3. Em **Authentication > Sign-in method**, habilite **Google**.
+4. Crie o **Cloud Firestore**.
+5. Publique as regras seguras que já estão em `firestore.rules`.
+6. Publique o site. Se usar um domínio fora do Firebase Hosting, adicione esse domínio aos domínios autorizados do Authentication.
+
+Para publicar tudo pelo Firebase Hosting, dentro desta pasta:
+
+```bash
+npx firebase-tools login
+npx firebase-tools use --add
+npx firebase-tools deploy
+```
+
+Estrutura de dados usada no Firestore:
+
+- `users/{uid}/app/settings`: perfil e treinos personalizados.
+- `users/{uid}/workouts/{treinoId}`: cada treino concluído em um documento separado.
+
+As regras permitem leitura e escrita somente quando o usuário autenticado possui o mesmo `uid`. O app continua usando armazenamento local como contingência durante falta de sinal e sincroniza quando a conexão volta.
