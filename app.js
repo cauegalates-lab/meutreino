@@ -370,9 +370,9 @@ function getCoachInsight() {
   if (!first) return { title: "Recuperação também é progresso", text: "Priorize sono, mobilidade e hidratação hoje.", value: "DESCANSO" };
   const name = first[0];
   const previous = lastExerciseRecord(name);
-  if (!previous?.sets?.length) return { title: `Próxima meta: ${name}`, text: "Registre todas as séries para liberar sugestões automáticas.", value: "COMEÇAR" };
+  if (!previous?.sets?.length) return { title: `Registre seu ${name}`, text: "Defina a carga durante o treino e acompanhe sua evolução pelo histórico.", value: "COMEÇAR" };
   const max = Math.max(...previous.sets.map((set) => Number(set.weight) || 0));
-  return { title: `Progressão sugerida: ${name}`, text: `Seu último máximo foi ${formatWeight(max)} kg. Se a execução estiver sólida, avance com controle.`, value: `${formatWeight(max + 2.5)} KG` };
+  return { title: `Último registro: ${name}`, text: `Seu último máximo foi ${formatWeight(max)} kg. A carga de hoje é definida por você.`, value: "HISTÓRICO" };
 }
 
 function exerciseHistoryFor(name) {
@@ -396,24 +396,22 @@ function lastExerciseRecord(exerciseName) {
 
 function createExercises(template) {
   return template.exercises.map((preset, exerciseIndex) => {
-    const [name, note, defaultWeight, defaultReps, lastText, delta, image, customSetCount] = preset;
+    const [name, note, defaultWeight, defaultReps] = preset;
+    const image = preset[6];
+    const customSetCount = preset[7];
     const previous = lastExerciseRecord(name);
     const setCount = Number(customSetCount) || (exerciseIndex === 0 || /Agachamento|Leg press|Desenvolvimento/.test(name) ? 4 : 3);
     const sets = Array.from({ length: setCount }, (_, setIndex) => {
       const oldSet = previous?.sets?.[setIndex];
-      const weight = oldSet ? Number(oldSet.weight) : Math.max(0, defaultWeight + (setIndex > 1 && defaultWeight > 0 ? 5 : 0));
+      const weight = oldSet ? Number(oldSet.weight) : template.custom ? Math.max(0, Number(defaultWeight) || 0) : 0;
       const reps = oldSet ? Number(oldSet.reps) : Math.max(1, defaultReps - (setIndex > 1 ? 2 : 0));
       return { weight, reps, done: false };
     });
     const previousMax = previous?.sets?.length ? Math.max(...previous.sets.map((set) => Number(set.weight) || 0)) : null;
-    const averageReps = previous?.sets?.length ? previous.sets.reduce((sum, set) => sum + (Number(set.reps) || 0), 0) / previous.sets.length : 0;
-    const shouldProgress = previousMax !== null && previousMax > 0 && averageReps >= Math.max(1, defaultReps - 1);
-    const suggestedWeight = previousMax !== null ? previousMax + (shouldProgress ? 2.5 : 0) : defaultWeight;
     const restMatch = String(note || "").match(/Descanso\s+(\d+)s/i);
     return {
       name, note, last: previousMax !== null ? `Último: ${formatWeight(previousMax)} kg` : "Sem registro anterior",
-      delta: shouldProgress ? "+2,5 kg sugeridos" : previousMax !== null ? "Manter técnica" : "Carga inicial",
-      image, sets, suggestedWeight, shouldProgress, noteText: "", restSeconds: Number(restMatch?.[1]) || 90,
+      image, sets, noteText: "", restSeconds: Number(restMatch?.[1]) || 90,
     };
   });
 }
@@ -655,11 +653,10 @@ function exerciseCard(exercise, exerciseIndex) {
   const done = exercise.sets.every((set)=>set.done);
   return `<section class="exercise-card">
     <div class="exercise-head"><div class="exercise-visual">${exercise.image?`<img src="${exercise.image}" alt="${escapeHtml(exercise.name)}"/>`:icon("dumbbell")}</div><div><h2>${escapeHtml(exercise.name)}</h2><p>${escapeHtml(exercise.note)}</p></div><span class="exercise-complete ${done?"done":""}">${icon("check")}</span></div>
-    ${exercise.suggestedWeight > 0 ? `<div class="progression-strip"><span>${icon("trending")}<small>SUGESTÃO INTELIGENTE</small><strong>${formatWeight(exercise.suggestedWeight)} kg</strong></span><button data-action="apply-suggestion" data-exercise="${exerciseIndex}">${exercise.shouldProgress ? "+2,5 kg" : "Usar carga"}</button></div>` : ""}
     <div class="set-table-head"><span>SÉRIE</span><span>CARGA</span><span>REPS</span><span>OK</span></div>
     <div class="set-list">${exercise.sets.map((set,setIndex)=>`<div class="set-row ${set.done?"done":""}"><span class="set-number">${setIndex+1}</span><div class="weight-control"><button data-action="weight-step" data-exercise="${exerciseIndex}" data-set="${setIndex}" data-delta="-2.5" aria-label="Diminuir 2,5 kg">−</button><label><input type="number" inputmode="decimal" min="0" step="0.5" value="${set.weight}" data-action="set-input" data-exercise="${exerciseIndex}" data-set="${setIndex}" data-field="weight" aria-label="Carga da série ${setIndex+1} de ${escapeHtml(exercise.name)}"><em>kg</em></label><button data-action="weight-step" data-exercise="${exerciseIndex}" data-set="${setIndex}" data-delta="2.5" aria-label="Aumentar 2,5 kg">+</button></div><label><input type="number" inputmode="numeric" min="1" step="1" value="${set.reps}" data-action="set-input" data-exercise="${exerciseIndex}" data-set="${setIndex}" data-field="reps" aria-label="Repetições da série ${setIndex+1} de ${escapeHtml(exercise.name)}"><em>reps</em></label><button data-action="toggle-set" data-exercise="${exerciseIndex}" data-set="${setIndex}" aria-label="${set.done?"Desmarcar":"Concluir"} série">${icon("check")}</button></div>`).join("")}</div>
     <button class="add-set-button" data-action="add-set" data-exercise="${exerciseIndex}">${icon("plus")} Adicionar série</button>
-    <div class="exercise-footer"><span>${escapeHtml(exercise.last)}</span><strong>${icon("trending")} ${escapeHtml(exercise.delta)} <small>desde o último treino</small></strong></div>
+    <div class="exercise-footer"><span>${escapeHtml(exercise.last)}</span><strong>${icon("history")} ${exercise.last === "Sem registro anterior" ? "Preencha sua carga" : "Seu último registro"}</strong></div>
     <textarea class="exercise-note-input" rows="1" data-action="exercise-note" data-exercise="${exerciseIndex}" placeholder="Adicionar anotação sobre execução, dor, ajuste...">${escapeHtml(exercise.noteText || "")}</textarea>
   </section>`;
 }
@@ -742,7 +739,7 @@ function showToast(message) {
 
 function builderExerciseRow(index) {
   const defaultRest = Math.max(15, Number(state.profile.settings?.defaultRest) || 90);
-  return `<div class="builder-exercise" data-builder-row><div class="builder-exercise-title"><span>Exercício ${index + 1}</span><button type="button" data-action="remove-builder-exercise" aria-label="Remover exercício">×</button></div><input class="field-wide" name="exercise_name" placeholder="Ex.: Supino reto" autocomplete="off"><div class="builder-mini-grid"><label>Séries<input name="exercise_sets" type="number" min="1" max="10" value="3"></label><label>Reps<input name="exercise_reps" type="number" min="1" max="100" value="10"></label><label>Carga kg<input name="exercise_weight" type="number" min="0" step="0.5" value="20"></label><label>Descanso<input name="exercise_rest" type="number" min="15" step="15" value="${defaultRest}"></label></div></div>`;
+  return `<div class="builder-exercise" data-builder-row><div class="builder-exercise-title"><span>Exercício ${index + 1}</span><button type="button" data-action="remove-builder-exercise" aria-label="Remover exercício">×</button></div><input class="field-wide" name="exercise_name" placeholder="Ex.: Supino reto" autocomplete="off"><div class="builder-mini-grid"><label>Séries<input name="exercise_sets" type="number" min="1" max="10" value="3"></label><label>Reps<input name="exercise_reps" type="number" min="1" max="100" value="10"></label><label>Carga kg<input name="exercise_weight" type="number" min="0" step="0.5" value="0"></label><label>Descanso<input name="exercise_rest" type="number" min="15" step="15" value="${defaultRest}"></label></div></div>`;
 }
 
 function showWorkoutBuilder() {
@@ -861,11 +858,6 @@ document.addEventListener("click", (event) => {
     const set = state.active.exercises[ex].sets[setIndex];
     set.weight = Math.max(0, Math.round((Number(set.weight) + delta) * 2) / 2); renderActiveWorkout();
   }
-  if (action === "apply-suggestion") {
-    const exercise = state.active.exercises[Number(button.dataset.exercise)];
-    exercise.sets.forEach((set) => { if (!set.done) set.weight = exercise.suggestedWeight; });
-    renderActiveWorkout(); showToast(`Carga sugerida aplicada em ${exercise.name}.`);
-  }
   if (action === "skip-rest") { state.restSeconds=0; if(state.restId)clearInterval(state.restId); state.restId=null; renderActiveWorkout(); }
   if (action === "rest-plus") { state.restSeconds += 30; const node=document.getElementById("rest-value"); if(node)node.textContent=formatDuration(state.restSeconds); }
   if (action === "finish-workout") finishWorkout();
@@ -964,5 +956,8 @@ state.selectedDay = firstWeek.find((day)=>day.today)?.key || "SEX";
 render();
 
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-  navigator.serviceWorker.register("service-worker.js").catch(()=>{});
+  navigator.serviceWorker
+    .register("service-worker.js", { updateViaCache: "none" })
+    .then((registration) => registration.update())
+    .catch(()=>{});
 }

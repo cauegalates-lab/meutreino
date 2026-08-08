@@ -13,7 +13,7 @@ App web mobile para registrar treinos, cargas, séries, repetições, frequênci
 - Criação e exclusão de treinos personalizados, com dia, grupo, duração, exercícios, séries, repetições, carga e descanso.
 - Registro de carga e repetições por série.
 - Ajuste rápido de carga em passos de 2,5 kg.
-- Sugestão automática de progressão de carga usando o último treino registrado.
+- Carga definida pelo usuário, com o último treino mantido apenas como referência histórica.
 - Marcação de séries concluídas e descanso automático conforme o exercício, com `+30s`, pular e vibração ao finalizar em aparelhos compatíveis.
 - Inclusão de séries extras.
 - Anotações por exercício durante o treino.
@@ -45,6 +45,10 @@ npx firebase-tools login
 npx firebase-tools use --add
 npx firebase-tools deploy
 ```
+
+O login Google usa o mesmo fluxo em computador e celular (`signInWithPopup`),
+sem redirecionamento específico para mobile. Em hospedagens externas, mantenha
+o domínio publicado na lista de domínios autorizados do Firebase Authentication.
 
 Estrutura de dados usada no Firestore:
 

@@ -47,10 +47,8 @@ async function main() {
   const {
     getAuth,
     GoogleAuthProvider,
-    getRedirectResult,
     onAuthStateChanged,
     signInWithPopup,
-    signInWithRedirect,
     signOut: firebaseSignOut,
   } = authSdk;
   const { getFirestore, doc, collection, getDoc, getDocs, setDoc, writeBatch, serverTimestamp } = firestoreSdk;
@@ -64,6 +62,7 @@ async function main() {
   let currentUser = null;
   let authResolved = false;
   let hydrated = false;
+  let hydrationUserId = null;
   let knownRemoteWorkoutIds = new Set();
   let queue = Promise.resolve();
   let syncTimer = null;
@@ -166,13 +165,45 @@ async function main() {
     await pushLocalState();
   }
 
+  function activateSignedInUser(user) {
+    if (!user) return;
+    const userChanged = currentUser?.uid !== user.uid;
+    currentUser = user;
+    authResolved = true;
+
+    if (userChanged) {
+      hydrated = false;
+      knownRemoteWorkoutIds = new Set();
+      bridge.activateUser(user.uid);
+    }
+
+    setStatus(hydrated ? "synced" : "syncing", hydrated ? "Tudo sincronizado" : "Buscando seus dados");
+    if (!hydrated && hydrationUserId !== user.uid) {
+      hydrationUserId = user.uid;
+      enqueue(async () => {
+        try {
+          await hydrateFromCloud();
+        } finally {
+          if (hydrationUserId === user.uid) hydrationUserId = null;
+        }
+      });
+    }
+  }
+
   async function signIn() {
     try {
-      const mobile = matchMedia("(max-width: 720px)").matches || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-      if (mobile) await signInWithRedirect(auth, provider);
-      else await signInWithPopup(auth, provider);
+      const result = await signInWithPopup(auth, provider);
+      // Mesmo fluxo usado no projeto da Lara: popup em qualquer dispositivo.
+      // O resultado também ativa a sessão imediatamente, enquanto o observer
+      // continua sendo a fonte de verdade para recargas e sessões já existentes.
+      if (result?.user) activateSignedInUser(result.user);
     } catch (error) {
-      if (error?.code !== "auth/popup-closed-by-user") reportError(error, "Não foi possível entrar com Google.");
+      if (error?.code === "auth/popup-closed-by-user" || error?.code === "auth/cancelled-popup-request") return;
+      if (error?.code === "auth/popup-blocked") {
+        reportError(error, "Permita pop-ups para este site e tente entrar novamente.");
+        return;
+      }
+      reportError(error, "Não foi possível entrar com Google.");
     }
   }
 
@@ -202,18 +233,17 @@ async function main() {
   });
 
   onAuthStateChanged(auth, (user) => {
-    currentUser = user;
     authResolved = true;
-    hydrated = false;
-    knownRemoteWorkoutIds = new Set();
     if (user) {
-      bridge.activateUser(user.uid);
-      enqueue(hydrateFromCloud);
+      activateSignedInUser(user);
+      return;
     }
-    else setStatus("local", "Entre com Google para ativar a sincronização");
+    currentUser = null;
+    hydrated = false;
+    hydrationUserId = null;
+    knownRemoteWorkoutIds = new Set();
+    setStatus("local", "Entre com Google para ativar a sincronização");
   });
-
-  getRedirectResult(auth).catch((error) => reportError(error, "Não foi possível concluir o login com Google."));
 }
 
 main().catch(async (error) => {
