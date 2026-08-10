@@ -3,10 +3,19 @@ const CUSTOM_KEY = "meu-treino-personalizados-v2";
 const PROFILE_KEY = "meu-treino-perfil-v2";
 const SYNC_META_KEY = "meu-treino-sync-meta-v1";
 const LOCAL_OWNER_KEY = "meu-treino-owner-v1";
+const INSTALL_ONBOARDING_KEY = "meu-treino-install-onboarding-v1";
 const DATA_SCHEMA_VERSION = 2;
 const WEEK_DAYS = ["SEG", "TER", "QUA", "QUI", "SEX", "SÁB", "DOM"];
 const DEFAULT_TRAINING_DAYS = ["SEG", "TER", "QUA", "QUI", "SEX", "SÁB"];
+const USER_AGENT = navigator.userAgent || "";
+const IS_IOS = /iPad|iPhone|iPod/i.test(USER_AGENT) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const IS_ANDROID = /Android/i.test(USER_AGENT);
+const IS_IOS_SAFARI = IS_IOS && /Safari/i.test(USER_AGENT) && !/CriOS|FxiOS|EdgiOS|OPiOS/i.test(USER_AGENT);
 let activeStorageUid = "";
+let installPromptEvent = null;
+let installOnboardingDismissed = readInstallOnboardingPreference();
+let installSuccessShown = false;
+let installPromptWaitExpired = !IS_ANDROID;
 
 const legacyTemplates = [
   {
@@ -94,6 +103,38 @@ const overlayRoot = document.getElementById("overlay-root");
 const toastRoot = document.getElementById("toast-root");
 const launchSplash = document.getElementById("launch-splash");
 
+function readInstallOnboardingPreference() {
+  try { return localStorage.getItem(INSTALL_ONBOARDING_KEY) === "done"; }
+  catch { return false; }
+}
+
+function rememberInstallOnboarding() {
+  installOnboardingDismissed = true;
+  try { localStorage.setItem(INSTALL_ONBOARDING_KEY, "done"); } catch {}
+}
+
+function completeAppInstall() {
+  rememberInstallOnboarding();
+  overlayRoot.innerHTML = "";
+  render();
+  if (!installSuccessShown) {
+    installSuccessShown = true;
+    showToast("Meu Treino instalado. Abra pelo novo ícone.");
+  }
+}
+
+function isStandaloneApp() {
+  return Boolean(window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true);
+}
+
+function isMobileInstallTarget() {
+  return IS_IOS || IS_ANDROID;
+}
+
+function installOnboardingActive() {
+  return isMobileInstallTarget() && !isStandaloneApp() && !installOnboardingDismissed;
+}
+
 function dismissLaunchSplash() {
   if (!launchSplash) return;
   const isStandaloneLaunch = document.documentElement.classList.contains("standalone-launch");
@@ -113,6 +154,66 @@ function dismissLaunchSplash() {
 
 function icon(name, className = "") {
   return `<svg class="icon ${className}" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
+}
+
+function renderInstallScreen() {
+  navRoot.innerHTML = "";
+  navRoot.style.display = "none";
+  const platform = IS_IOS ? "iPhone" : "Android";
+  const preparingInstaller = IS_ANDROID && !installPromptEvent && !installPromptWaitExpired;
+  viewRoot.innerHTML = `<div class="install-screen">
+    <section class="install-shell" aria-labelledby="install-title">
+      <div class="install-app-icon"><img src="assets/icon.svg" alt=""></div>
+      <p class="install-kicker">MEU TREINO</p>
+      <h1 id="install-title">Seu treino sempre à mão.</h1>
+      <p class="install-copy">Instale no ${platform} para abrir em tela cheia e acessar rapidamente durante o treino.</p>
+      <div class="install-benefits" aria-label="Vantagens da instalação">
+        <span>${icon("check")} Ícone direto na tela inicial</span>
+        <span>${icon("check")} Experiência em tela cheia</span>
+        <span>${icon("check")} Acesso rápido aos seus treinos</span>
+      </div>
+      <button class="install-primary" data-action="install-app" ${preparingInstaller ? "disabled" : ""}>${preparingInstaller ? '<span class="install-button-spinner" aria-hidden="true"></span>' : icon("download")}<span>${preparingInstaller ? "Preparando instalação..." : "Instalar no celular"}</span>${icon("chevron")}</button>
+      <button class="install-skip" data-action="continue-browser">Continuar pelo navegador</button>
+      <small>Gratuito e sem precisar da App Store ou Play Store.</small>
+    </section>
+  </div>`;
+}
+
+function showInstallGuide() {
+  const iosBrowserStep = IS_IOS_SAFARI ? "" : `<div class="install-step"><b>1</b><span><strong>Abra este link no Safari</strong><small>Use a opção “Abrir no Safari” do seu navegador atual.</small></span>${icon("compass")}</div>`;
+  const firstNumber = IS_IOS_SAFARI ? 1 : 2;
+  const guide = IS_IOS
+    ? `${iosBrowserStep}
+       <div class="install-step"><b>${firstNumber}</b><span><strong>Toque em Compartilhar</strong><small>É o ícone de uma seta saindo de um quadrado.</small></span>${icon("share")}</div>
+       <div class="install-step"><b>${firstNumber + 1}</b><span><strong>Adicionar à Tela de Início</strong><small>Role o menu até encontrar essa opção.</small></span>${icon("home")}</div>
+       <div class="install-step"><b>${firstNumber + 2}</b><span><strong>Confirme em Adicionar</strong><small>Se aparecer, mantenha “Abrir como App da Web” ativado.</small></span>${icon("check")}</div>`
+    : `<div class="install-step"><b>1</b><span><strong>Abra este link no Chrome</strong><small>O instalador precisa ser aberto pelo navegador do Google.</small></span>${icon("compass")}</div>
+       <div class="install-step"><b>2</b><span><strong>Abra o menu do navegador</strong><small>Toque nos três pontos no canto da tela.</small></span>${icon("more")}</div>
+       <div class="install-step"><b>3</b><span><strong>Escolha Instalar app</strong><small>Em alguns celulares aparece como “Adicionar à tela inicial”.</small></span>${icon("download")}</div>`;
+
+  overlayRoot.innerHTML = `<div class="modal-backdrop install-guide-backdrop"><section class="install-guide" role="dialog" aria-modal="true" aria-labelledby="install-guide-title"><button class="modal-close" data-action="close-modal" aria-label="Fechar">×</button><span class="install-guide-icon">${icon(IS_IOS ? "share" : "download")}</span><p class="eyebrow">INSTALAÇÃO</p><h2 id="install-guide-title">${IS_IOS ? "Instalar no iPhone" : "Instalar no Android"}</h2><p>${IS_IOS ? "A Apple exige esta confirmação pelo menu do Safari." : "O instalador automático não abriu neste navegador. Faça assim:"}</p><div class="install-steps">${guide}</div><button class="primary-button install-guide-button" data-action="close-modal"><span class="button-label">Entendi</span><span class="button-icon">${icon("check")}</span></button></section></div>`;
+}
+
+async function requestAppInstall() {
+  if (!installPromptEvent) {
+    showInstallGuide();
+    return;
+  }
+
+  const prompt = installPromptEvent;
+  installPromptEvent = null;
+  try {
+    await prompt.prompt();
+    const choice = await prompt.userChoice;
+    if (choice?.outcome === "accepted") {
+      completeAppInstall();
+    } else {
+      showToast("Instalação cancelada. Você pode tentar novamente depois.");
+    }
+  } catch (error) {
+    console.error("App install:", error);
+    showInstallGuide();
+  }
 }
 
 function googleMark() {
@@ -372,6 +473,7 @@ function setCloudStatus(next = {}) {
   const nextUserId = state.cloud.user?.uid || null;
   const authChanged = previousConfigured !== state.cloud.configured || previousResolved !== state.cloud.authResolved || previousUserId !== nextUserId;
   if (authChanged) { render(); return; }
+  if (installOnboardingActive()) { renderInstallScreen(); return; }
   if (authGateActive()) { renderAuthScreen(); return; }
   if (!state.active && state.view === "perfil" && !overlayRoot.innerHTML) renderProfile();
 }
@@ -550,12 +652,13 @@ function renderAuthScreen() {
       <h1>${checking ? "Preparando seu treino" : failed ? "Tente entrar novamente" : "Seu treino, do seu jeito."}</h1>
       <p class="auth-copy">${checking ? "Carregando sua conta..." : "Entre para acessar seus treinos e acompanhar sua evolução."}</p>
       ${checking ? `<div class="auth-loading"><span class="auth-spinner"></span><small>Conectando</small></div>` : `<button class="google-login-button" data-action="cloud-login">${googleMark()}<span>Continuar com Google</span></button>`}
-      <p class="auth-footnote">Dados privados e sincronizados com sua conta.</p>
+      <p class="auth-footnote">Seus treinos ficam privados e salvos na sua conta.</p>
     </section>
   </div>`;
 }
 
 function render() {
+  if (installOnboardingActive()) { renderInstallScreen(); return; }
   if (authGateActive()) { renderAuthScreen(); return; }
   renderNav();
   if (state.active) renderActiveWorkout();
@@ -718,12 +821,9 @@ function renderProfile() {
   const profile = state.profile;
   const records = personalRecords().length;
   const streak = workoutStreak();
-  const cloud = state.cloud;
   const settings = profile.settings || {};
-  const cloudTitle = cloud.status === "synced" ? "Sincronização ativa" : cloud.status === "syncing" ? "Sincronizando dados..." : cloud.status === "offline" ? "Offline • sincroniza depois" : cloud.status === "error" ? "Falha na sincronização" : cloud.configured ? "Conta conectada" : "Firebase indisponível";
-  const cloudText = cloud.user ? `${cloud.user.email || cloud.user.displayName || "Conta Google"} • dados salvos automaticamente` : "Entre com Google para sincronizar seus dados.";
-  const cloudAction = cloud.user ? "cloud-logout" : "cloud-login";
-  const cloudButton = cloud.user ? "Sair" : "Conectar";
+  const accountLabel = state.cloud.user?.email || state.cloud.user?.displayName || "Conta Google conectada";
+  const canOfferInstall = isMobileInstallTarget() && !isStandaloneApp();
   const trainingDaysLabel = profile.trainingDays?.length ? profile.trainingDays.join(" • ") : "Nenhum dia definido";
   const settingsLabel = `${Number(settings.defaultRest) || 90}s padrão • ${settings.autoRest === false ? "descanso manual" : "descanso automático"}`;
   const goalLabel = profile.goal || "Objetivo não definido";
@@ -739,12 +839,13 @@ function renderProfile() {
   viewRoot.innerHTML = `<div class="screen-page profile-page">
     <header class="profile-hero"><input class="profile-photo-input" id="profile-photo-input" type="file" accept="image/*" aria-label="Escolher foto de perfil"><button class="profile-avatar" data-action="change-avatar" aria-label="Alterar foto de perfil">${profileAvatarContent()}<span class="profile-avatar-edit">${icon("camera")}</span></button><p class="eyebrow">SEU PERFIL</p><h1>${escapeHtml(profileDisplayName())}</h1><p>Constância vence motivação.</p></header>
     <section class="profile-stats"><article><strong>${state.history.length}</strong><span>Treinos</span></article><article><strong>${streak}</strong><span>Sequência</span></article><article><strong>${records}</strong><span>Recordes</span></article></section>
-    <section class="cloud-card cloud-${escapeHtml(cloud.status)}"><span class="cloud-icon">${icon("cloud")}</span><div><small>CONTA GOOGLE</small><strong>${escapeHtml(cloudTitle)}</strong><p>${escapeHtml(cloudText)}</p></div><button data-action="${cloudAction}">${cloudButton}${cloud.user ? icon("log-out") : icon("chevron")}</button></section>
     <section class="profile-card">
       <button data-action="edit-profile">${`<span class="profile-option-icon">${icon("target")}</span>`}<span><strong>Minha meta</strong><small>${escapeHtml(goalLabel)} • ${escapeHtml(frequencyLabel)}</small></span>${icon("chevron")}</button>
       <button data-action="edit-profile">${`<span class="profile-option-icon">${icon("activity")}</span>`}<span><strong>Dados físicos</strong><small>${escapeHtml(physicalLabel)}</small></span>${icon("chevron")}</button>
       <button data-action="edit-training-days">${`<span class="profile-option-icon">${icon("calendar")}</span>`}<span><strong>Dias de treino</strong><small>${escapeHtml(trainingDaysLabel)}</small></span>${icon("chevron")}</button>
       <button data-action="edit-settings">${`<span class="profile-option-icon">${icon("settings")}</span>`}<span><strong>Configurações</strong><small>${escapeHtml(settingsLabel)}</small></span>${icon("chevron")}</button>
+      ${canOfferInstall ? `<button data-action="install-app"><span class="profile-option-icon">${icon("download")}</span><span><strong>Instalar aplicativo</strong><small>Adicionar à tela inicial</small></span>${icon("chevron")}</button>` : ""}
+      <button data-action="cloud-logout">${`<span class="profile-option-icon">${icon("user")}</span>`}<span><strong>Conta Google</strong><small>${escapeHtml(accountLabel)}</small></span>${icon("log-out")}</button>
     </section>
     <section class="level-card"><div><span>NÍVEL ${level}</span><h2>${escapeHtml(levelTitle)}</h2><p>${state.history.length ? `Mais ${remaining} ${remaining === 1 ? "treino" : "treinos"} para o próximo nível.` : "Conclua seu primeiro treino para evoluir."}</p></div><div class="level-ring">${levelProgress}%</div></section>
   </div>`;
@@ -870,20 +971,20 @@ function showDeleteTemplateConfirmation(index) {
 
 function showProfileEditor() {
   const profile = state.profile;
-  overlayRoot.innerHTML = `<div class="modal-backdrop"><form class="builder-modal profile-editor" id="profile-form"><button class="modal-close" type="button" data-action="close-modal" aria-label="Fechar">×</button><p class="eyebrow">PERFIL FÍSICO</p><h2>Seus dados</h2><p>Peso, altura e objetivo ficam sincronizados com sua conta. A frequência é definida em Dias de treino.</p><div class="builder-form-grid"><label>Peso (kg)<input name="weight" type="number" min="30" max="300" step="0.1" value="${profile.weight || ""}" placeholder="Ex.: 82"></label><label>Altura (cm)<input name="height" type="number" min="120" max="230" value="${profile.height || ""}" placeholder="Ex.: 178"></label><label class="wide">Objetivo<select name="goal"><option value="" ${profile.goal ? "" : "selected"} disabled>Selecione seu objetivo</option><option ${profile.goal === "Hipertrofia" ? "selected" : ""}>Hipertrofia</option><option ${profile.goal === "Força" ? "selected" : ""}>Força</option><option ${profile.goal === "Emagrecimento" ? "selected" : ""}>Emagrecimento</option><option ${profile.goal === "Condicionamento" ? "selected" : ""}>Condicionamento</option></select></label></div><button class="primary-button builder-save" type="submit"><span class="button-label">Salvar perfil</span><span class="button-icon">${icon("check")}</span></button></form></div>`;
+  overlayRoot.innerHTML = `<div class="modal-backdrop"><form class="builder-modal profile-editor" id="profile-form"><button class="modal-close" type="button" data-action="close-modal" aria-label="Fechar">×</button><p class="eyebrow">PERFIL FÍSICO</p><h2>Seus dados</h2><p>Peso, altura e objetivo ficam salvos automaticamente na sua conta. A frequência é definida em Dias de treino.</p><div class="builder-form-grid"><label>Peso (kg)<input name="weight" type="number" min="30" max="300" step="0.1" value="${profile.weight || ""}" placeholder="Ex.: 82"></label><label>Altura (cm)<input name="height" type="number" min="120" max="230" value="${profile.height || ""}" placeholder="Ex.: 178"></label><label class="wide">Objetivo<select name="goal"><option value="" ${profile.goal ? "" : "selected"} disabled>Selecione seu objetivo</option><option ${profile.goal === "Hipertrofia" ? "selected" : ""}>Hipertrofia</option><option ${profile.goal === "Força" ? "selected" : ""}>Força</option><option ${profile.goal === "Emagrecimento" ? "selected" : ""}>Emagrecimento</option><option ${profile.goal === "Condicionamento" ? "selected" : ""}>Condicionamento</option></select></label></div><button class="primary-button builder-save" type="submit"><span class="button-label">Salvar perfil</span><span class="button-icon">${icon("check")}</span></button></form></div>`;
 }
 
 function showTrainingDaysEditor() {
   const selected = new Set(state.profile.trainingDays || DEFAULT_TRAINING_DAYS);
   const labels = { SEG: "Seg", TER: "Ter", QUA: "Qua", QUI: "Qui", SEX: "Sex", "SÁB": "Sáb", DOM: "Dom" };
-  overlayRoot.innerHTML = `<div class="modal-backdrop"><form class="builder-modal profile-editor" id="training-days-form"><button class="modal-close" type="button" data-action="close-modal" aria-label="Fechar">×</button><p class="eyebrow">ROTINA SEMANAL</p><h2>Dias de treino</h2><p>Marque os dias em que você normalmente treina. Os demais aparecem como recuperação na semana.</p><fieldset class="training-days-fieldset"><legend>Selecione pelo menos um dia</legend><div class="training-days-grid">${WEEK_DAYS.map((day) => `<label class="training-day-toggle"><input type="checkbox" name="training_days" value="${day}" ${selected.has(day) ? "checked" : ""}><span>${labels[day]}</span></label>`).join("")}</div></fieldset><div class="settings-note">${icon("cloud")} Essa preferência é salva automaticamente na sua conta Google.</div><button class="primary-button builder-save" type="submit"><span class="button-label">Salvar dias</span><span class="button-icon">${icon("check")}</span></button></form></div>`;
+  overlayRoot.innerHTML = `<div class="modal-backdrop"><form class="builder-modal profile-editor" id="training-days-form"><button class="modal-close" type="button" data-action="close-modal" aria-label="Fechar">×</button><p class="eyebrow">ROTINA SEMANAL</p><h2>Dias de treino</h2><p>Marque os dias em que você normalmente treina. Os demais aparecem como recuperação na semana.</p><fieldset class="training-days-fieldset"><legend>Selecione pelo menos um dia</legend><div class="training-days-grid">${WEEK_DAYS.map((day) => `<label class="training-day-toggle"><input type="checkbox" name="training_days" value="${day}" ${selected.has(day) ? "checked" : ""}><span>${labels[day]}</span></label>`).join("")}</div></fieldset><div class="settings-note">${icon("check")} Essa preferência é salva automaticamente.</div><button class="primary-button builder-save" type="submit"><span class="button-label">Salvar dias</span><span class="button-icon">${icon("check")}</span></button></form></div>`;
 }
 
 function showSettingsEditor() {
   const settings = state.profile.settings || {};
   const defaultRest = Number(settings.defaultRest) || 90;
   const restOptions = [45, 60, 75, 90, 120, 150];
-  overlayRoot.innerHTML = `<div class="modal-backdrop"><form class="builder-modal profile-editor settings-editor" id="settings-form"><button class="modal-close" type="button" data-action="close-modal" aria-label="Fechar">×</button><p class="eyebrow">PREFERÊNCIAS</p><h2>Configurações</h2><p>Ajuste como o app se comporta durante o treino.</p><div class="settings-stack"><label class="settings-select-row"><span><strong>Descanso padrão</strong><small>Usado ao criar novos exercícios</small></span><select name="default_rest" aria-label="Descanso padrão">${restOptions.map((seconds) => `<option value="${seconds}" ${seconds === defaultRest ? "selected" : ""}>${seconds}s</option>`).join("")}</select></label><label class="settings-toggle-row"><span><strong>Descanso automático</strong><small>Inicia o contador ao concluir uma série</small></span><input type="checkbox" name="auto_rest" ${settings.autoRest === false ? "" : "checked"} aria-label="Descanso automático"><i aria-hidden="true"></i></label><label class="settings-toggle-row"><span><strong>Vibração</strong><small>Avisa quando o descanso terminar</small></span><input type="checkbox" name="vibration" ${settings.vibration === false ? "" : "checked"} aria-label="Vibração ao terminar descanso"><i aria-hidden="true"></i></label></div><div class="settings-note">${icon("cloud")} Preferências sincronizadas com sua conta.</div><button class="primary-button builder-save" type="submit"><span class="button-label">Salvar configurações</span><span class="button-icon">${icon("check")}</span></button></form></div>`;
+  overlayRoot.innerHTML = `<div class="modal-backdrop"><form class="builder-modal profile-editor settings-editor" id="settings-form"><button class="modal-close" type="button" data-action="close-modal" aria-label="Fechar">×</button><p class="eyebrow">PREFERÊNCIAS</p><h2>Configurações</h2><p>Ajuste como o app se comporta durante o treino.</p><div class="settings-stack"><label class="settings-select-row"><span><strong>Descanso padrão</strong><small>Usado ao criar novos exercícios</small></span><select name="default_rest" aria-label="Descanso padrão">${restOptions.map((seconds) => `<option value="${seconds}" ${seconds === defaultRest ? "selected" : ""}>${seconds}s</option>`).join("")}</select></label><label class="settings-toggle-row"><span><strong>Descanso automático</strong><small>Inicia o contador ao concluir uma série</small></span><input type="checkbox" name="auto_rest" ${settings.autoRest === false ? "" : "checked"} aria-label="Descanso automático"><i aria-hidden="true"></i></label><label class="settings-toggle-row"><span><strong>Vibração</strong><small>Avisa quando o descanso terminar</small></span><input type="checkbox" name="vibration" ${settings.vibration === false ? "" : "checked"} aria-label="Vibração ao terminar descanso"><i aria-hidden="true"></i></label></div><div class="settings-note">${icon("check")} Preferências salvas automaticamente.</div><button class="primary-button builder-save" type="submit"><span class="button-label">Salvar configurações</span><span class="button-icon">${icon("check")}</span></button></form></div>`;
 }
 
 function renderProfilePhoto(image, size = 240, quality = 0.82) {
@@ -930,10 +1031,12 @@ async function updateProfilePhoto(file) {
   }
 }
 
-document.addEventListener("click", (event) => {
+document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
+  if (action === "install-app") { await requestAppInstall(); return; }
+  if (action === "continue-browser") { rememberInstallOnboarding(); overlayRoot.innerHTML = ""; render(); return; }
   if (action === "nav") { state.view = button.dataset.view; render(); window.scrollTo({top:0,behavior:"smooth"}); }
   if (action === "select-day") { state.selectedDay = button.dataset.day; renderHome(); }
   if (action === "start-day") startWorkout(currentWeekTemplate());
@@ -1071,6 +1174,16 @@ document.addEventListener("change", (event) => {
 });
 
 window.addEventListener("beforeunload", stopTimers);
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  installPromptEvent = event;
+  installPromptWaitExpired = true;
+  if (installOnboardingActive()) renderInstallScreen();
+});
+window.addEventListener("appinstalled", () => {
+  installPromptEvent = null;
+  completeAppInstall();
+});
 
 window.GymApp = Object.freeze({
   getSnapshot: getCloudSnapshot,
@@ -1085,6 +1198,13 @@ const firstWeek = buildWeek();
 state.selectedDay = firstWeek.find((day)=>day.today)?.key || "SEX";
 render();
 dismissLaunchSplash();
+
+if (IS_ANDROID && installOnboardingActive()) {
+  window.setTimeout(() => {
+    installPromptWaitExpired = true;
+    if (installOnboardingActive()) renderInstallScreen();
+  }, 2200);
+}
 
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
   navigator.serviceWorker

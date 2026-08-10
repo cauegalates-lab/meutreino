@@ -1,5 +1,5 @@
-const CACHE = "meu-treino-v12";
-const ASSETS = ["./","./index.html","./styles.css","./app.js","./firebase-sync.js","./firebase-config.js","./manifest.webmanifest","./assets/icon.svg","./assets/hero-costas.png","./assets/puxada-alta.png","./assets/remada-baixa.png"];
+const CACHE = "meu-treino-v14";
+const ASSETS = ["./","./index.html","./styles.css","./app.js","./firebase-sync.js","./firebase-config.js","./manifest.webmanifest","./assets/icon.svg","./assets/icon-192.png","./assets/icon-512.png","./assets/apple-touch-icon.png","./assets/hero-costas.png","./assets/puxada-alta.png","./assets/remada-baixa.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)));

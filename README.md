@@ -5,7 +5,7 @@ App web mobile para registrar treinos, cargas, séries, repetições, frequênci
 ## Como abrir
 
 - Para visualizar localmente, rode a pasta por um servidor web (por exemplo, `npx serve .`).
-- Para usar como PWA instalável e ativar login/sincronização, publique em HTTPS.
+- Para usar como PWA instalável e ativar login e salvamento na nuvem, publique em HTTPS.
 
 ## O que já funciona
 
@@ -20,13 +20,14 @@ App web mobile para registrar treinos, cargas, séries, repetições, frequênci
 - Cronômetro do treino.
 - Histórico salvo imediatamente no próprio aparelho, separado por conta, inclusive sem internet.
 - Integração preparada com Firebase Authentication + Cloud Firestore.
-- Login com Google e sincronização automática entre aparelhos quando o Firebase estiver configurado.
+- Login com Google e salvamento automático no Firebase, separado pelo identificador exclusivo de cada usuário.
+- Tela de instalação inteligente no primeiro acesso: botão nativo no Android e orientação curta no iPhone.
 - Área individual por `uid`: perfil, foto, rotina, histórico, cargas e configurações nunca usam os dados locais de outra conta.
 - Progressão real de carga, volume e repetições, sem misturar dados fictícios às métricas do usuário.
 - Histórico individual por exercício, gráfico, recordes, volume mensal, sequência e consistência.
 - Perfil físico editável com peso, altura, objetivo, foto e dias de treino.
 - Configurações de descanso automático, tempo padrão e vibração.
-- Conta Google como sincronização automática dos dados no Firestore, sem exportação manual.
+- A conta Google apenas identifica o usuário; treinos, perfil e configurações são armazenados no Firestore, sem exportação manual.
 - Interface responsiva e instalável como PWA.
 - Tela de abertura curta ao iniciar pelo ícone da tela inicial, com transição para a sessão do usuário.
 - Login Google minimalista e cards com cores sólidas.
@@ -58,7 +59,7 @@ Estrutura de dados usada no Firestore:
 - `users/{uid}/app/settings`: perfil e treinos personalizados.
 - `users/{uid}/workouts/{treinoId}`: cada treino concluído em um documento separado.
 
-As regras permitem leitura e escrita somente quando o usuário autenticado possui o mesmo `uid`. O app continua usando armazenamento local como contingência durante falta de sinal e sincroniza quando a conexão volta.
+As regras permitem leitura e escrita somente quando o usuário autenticado possui o mesmo `uid`. O app continua usando armazenamento local durante a falta de sinal e envia as alterações ao Firebase quando a conexão volta.
 
 Desde a versão 11, o armazenamento local também é separado por `uid`. Ao atualizar,
 a rotina e os dados locais da versão anterior são migrados apenas para a conta

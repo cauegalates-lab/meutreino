@@ -90,7 +90,7 @@ async function main() {
     bridge.setCloudStatus({ configured: true, authResolved, status, user: userInfo(currentUser), message });
   }
 
-  function reportError(error, message = "Não foi possível sincronizar agora.") {
+  function reportError(error, message = "Não foi possível salvar na nuvem agora.") {
     console.error("Firebase sync:", error);
     setStatus("error", message);
     if (error?.code === "auth/unauthorized-domain") bridge.toast("Autorize o domínio publicado no Firebase Authentication.");
@@ -145,7 +145,7 @@ async function main() {
       schemaVersion: 2,
     });
     await commitWorkoutDiff(snapshot, expectedUid);
-    if (currentUser?.uid === expectedUid) setStatus("synced", "Tudo sincronizado");
+    if (currentUser?.uid === expectedUid) setStatus("synced", "Dados salvos");
   }
 
   async function hydrateFromCloud(expectedUid = currentUser?.uid) {
@@ -193,7 +193,7 @@ async function main() {
       bridge.activateUser(userInfo(user));
     }
 
-    setStatus(hydrated ? "synced" : "syncing", hydrated ? "Tudo sincronizado" : "Buscando seus dados");
+    setStatus(hydrated ? "synced" : "syncing", hydrated ? "Dados salvos" : "Buscando seus dados");
     if (!hydrated && hydrationUserId !== user.uid) {
       hydrationUserId = user.uid;
       enqueue(async () => {
@@ -262,7 +262,7 @@ async function main() {
     hydrated = false;
     hydrationUserId = null;
     knownRemoteWorkoutIds = new Set();
-    setStatus("local", "Entre com Google para ativar a sincronização");
+    setStatus("local", "Entre com Google para acessar seus dados");
   });
 }
 
