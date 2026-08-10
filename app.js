@@ -3,10 +3,12 @@ const CUSTOM_KEY = "meu-treino-personalizados-v2";
 const PROFILE_KEY = "meu-treino-perfil-v2";
 const SYNC_META_KEY = "meu-treino-sync-meta-v1";
 const LOCAL_OWNER_KEY = "meu-treino-owner-v1";
+const DATA_SCHEMA_VERSION = 2;
 const WEEK_DAYS = ["SEG", "TER", "QUA", "QUI", "SEX", "SÁB", "DOM"];
 const DEFAULT_TRAINING_DAYS = ["SEG", "TER", "QUA", "QUI", "SEX", "SÁB"];
+let activeStorageUid = "";
 
-const templates = [
+const legacyTemplates = [
   {
     name: "Peito + Tríceps", group: "Peito e braços", day: "SEG", color: "#ff8a3d", duration: 55,
     exercises: [
@@ -67,16 +69,16 @@ const templates = [
   },
 ];
 
-templates[4].exercises = templates[1].exercises;
+legacyTemplates[4].exercises = legacyTemplates[1].exercises;
 
 const restTemplate = { name: "Descanso", group: "Recuperação", day: "DOM", color: "#7b858a", duration: 0, exercises: [] };
 
 const state = {
   view: "home",
   selectedDay: "SEX",
-  history: loadHistory(),
-  customTemplates: loadCustomTemplates(),
-  profile: loadProfile(),
+  history: [],
+  customTemplates: [],
+  profile: defaultProfile(),
   active: null,
   metric: "carga",
   progressExercise: "Supino reto",
@@ -90,6 +92,24 @@ const viewRoot = document.getElementById("view");
 const navRoot = document.getElementById("bottom-nav");
 const overlayRoot = document.getElementById("overlay-root");
 const toastRoot = document.getElementById("toast-root");
+const launchSplash = document.getElementById("launch-splash");
+
+function dismissLaunchSplash() {
+  if (!launchSplash) return;
+  const isStandaloneLaunch = document.documentElement.classList.contains("standalone-launch");
+  if (!isStandaloneLaunch) {
+    launchSplash.remove();
+    return;
+  }
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  window.setTimeout(() => {
+    launchSplash.classList.add("is-leaving");
+    window.setTimeout(() => {
+      launchSplash.remove();
+      document.documentElement.classList.remove("standalone-launch");
+    }, reducedMotion ? 20 : 320);
+  }, reducedMotion ? 250 : 1250);
+}
 
 function icon(name, className = "") {
   return `<svg class="icon ${className}" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
@@ -104,7 +124,21 @@ function profilePhotoUrl() {
 }
 
 function profileDisplayName() {
-  return state.cloud.user?.displayName || "Cauê Galates";
+  const googleName = String(state.cloud.user?.displayName || "").trim();
+  if (googleName) return googleName;
+  const emailName = String(state.cloud.user?.email || "").split("@")[0].replace(/[._-]+/g, " ").trim();
+  return emailName || "Atleta";
+}
+
+function profileFirstName() {
+  return profileDisplayName().split(/\s+/).filter(Boolean)[0] || "Atleta";
+}
+
+function currentGreeting() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Bom dia";
+  if (hour < 18) return "Boa tarde";
+  return "Boa noite";
 }
 
 function profileAvatarContent() {
@@ -117,31 +151,36 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
 }
 
-function loadHistory() {
+function storageKey(baseKey, uid = activeStorageUid) {
+  return uid ? `${baseKey}:user:${uid}` : baseKey;
+}
+
+function readJson(key, fallback) {
   try {
-    const parsed = JSON.parse(localStorage.getItem(STORE_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed : [];
+    const raw = localStorage.getItem(key);
+    return raw === null ? fallback : JSON.parse(raw);
   } catch {
-    return [];
+    return fallback;
   }
 }
 
-function loadCustomTemplates() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(CUSTOM_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+function loadHistory(uid = activeStorageUid) {
+  const parsed = readJson(storageKey(STORE_KEY, uid), []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function loadCustomTemplates(uid = activeStorageUid) {
+  const parsed = readJson(storageKey(CUSTOM_KEY, uid), []);
+  return Array.isArray(parsed) ? parsed : [];
 }
 
 function defaultProfile() {
   return {
-    weight: 82,
-    height: 178,
-    goal: "Hipertrofia",
-    frequency: 6,
-    trainingDays: [...DEFAULT_TRAINING_DAYS],
+    weight: 0,
+    height: 0,
+    goal: "",
+    frequency: 0,
+    trainingDays: [],
     photoDataUrl: "",
     settings: { autoRest: true, vibration: true, defaultRest: 90 },
   };
@@ -149,47 +188,43 @@ function defaultProfile() {
 
 function normalizeProfile(profile = {}) {
   const fallback = defaultProfile();
-  const legacyFrequency = Math.min(7, Math.max(1, Number(profile.frequency) || fallback.frequency));
-  const requestedDays = Array.isArray(profile.trainingDays) && profile.trainingDays.length
+  const legacyFrequency = Math.min(7, Math.max(0, Number(profile.frequency) || 0));
+  const requestedDays = Array.isArray(profile.trainingDays)
     ? profile.trainingDays
     : WEEK_DAYS.slice(0, legacyFrequency);
   const trainingDays = WEEK_DAYS.filter((day) => requestedDays.includes(day));
   return {
     ...fallback,
     ...profile,
-    frequency: trainingDays.length || fallback.frequency,
-    trainingDays: trainingDays.length ? trainingDays : fallback.trainingDays,
+    weight: Math.max(0, Number(profile.weight) || 0),
+    height: Math.max(0, Number(profile.height) || 0),
+    goal: String(profile.goal || "").trim(),
+    frequency: trainingDays.length,
+    trainingDays,
     settings: { ...fallback.settings, ...(profile.settings || {}) },
   };
 }
 
-function loadProfile() {
-  try {
-    return normalizeProfile(JSON.parse(localStorage.getItem(PROFILE_KEY) || "{}") || {});
-  } catch {
-    return defaultProfile();
-  }
+function loadProfile(uid = activeStorageUid) {
+  return normalizeProfile(readJson(storageKey(PROFILE_KEY, uid), {}));
 }
 
-function localUpdatedAt() {
-  try {
-    return Number(JSON.parse(localStorage.getItem(SYNC_META_KEY) || "{}").updatedAt) || 0;
-  } catch {
-    return 0;
-  }
+function localUpdatedAt(uid = activeStorageUid) {
+  return Number(readJson(storageKey(SYNC_META_KEY, uid), {}).updatedAt) || 0;
 }
 
 function markDataChanged(scope) {
+  if (!activeStorageUid) return;
   const updatedAt = Date.now();
   try {
-    localStorage.setItem(SYNC_META_KEY, JSON.stringify({ updatedAt }));
+    localStorage.setItem(storageKey(SYNC_META_KEY), JSON.stringify({ updatedAt, schemaVersion: DATA_SCHEMA_VERSION }));
   } catch {}
   window.dispatchEvent(new CustomEvent("gym:data-changed", { detail: { scope, updatedAt } }));
 }
 
 function persistHistory() {
   try {
-    localStorage.setItem(STORE_KEY, JSON.stringify(state.history));
+    localStorage.setItem(storageKey(STORE_KEY), JSON.stringify(state.history));
   } catch {
     showToast("Não foi possível salvar neste navegador.");
   }
@@ -198,7 +233,7 @@ function persistHistory() {
 
 function persistCustomTemplates() {
   try {
-    localStorage.setItem(CUSTOM_KEY, JSON.stringify(state.customTemplates));
+    localStorage.setItem(storageKey(CUSTOM_KEY), JSON.stringify(state.customTemplates));
   } catch {
     showToast("Não foi possível salvar seus treinos personalizados.");
   }
@@ -207,7 +242,7 @@ function persistCustomTemplates() {
 
 function persistProfile() {
   try {
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(state.profile));
+    localStorage.setItem(storageKey(PROFILE_KEY), JSON.stringify(state.profile));
   } catch {
     showToast("Não foi possível salvar seu perfil.");
   }
@@ -216,7 +251,7 @@ function persistProfile() {
 
 function getCloudSnapshot() {
   return {
-    schemaVersion: 1,
+    schemaVersion: DATA_SCHEMA_VERSION,
     updatedAt: localUpdatedAt(),
     profile: state.profile,
     customTemplates: state.customTemplates,
@@ -232,34 +267,97 @@ function applyCloudSnapshot(payload = {}, options = {}) {
   if (payload.profile && typeof payload.profile === "object") state.profile = normalizeProfile({ ...state.profile, ...payload.profile });
   const updatedAt = Math.max(localUpdatedAt(), Number(payload.updatedAt) || 0);
   try {
-    localStorage.setItem(STORE_KEY, JSON.stringify(state.history));
-    localStorage.setItem(CUSTOM_KEY, JSON.stringify(state.customTemplates));
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(state.profile));
-    localStorage.setItem(SYNC_META_KEY, JSON.stringify({ updatedAt }));
+    localStorage.setItem(storageKey(STORE_KEY), JSON.stringify(state.history));
+    localStorage.setItem(storageKey(CUSTOM_KEY), JSON.stringify(state.customTemplates));
+    localStorage.setItem(storageKey(PROFILE_KEY), JSON.stringify(state.profile));
+    localStorage.setItem(storageKey(SYNC_META_KEY), JSON.stringify({ updatedAt, schemaVersion: DATA_SCHEMA_VERSION }));
   } catch {}
   render();
   if (options.notify) showToast(options.notify);
 }
 
-function activateCloudUser(uid) {
+function legacyTemplateCopies() {
+  return legacyTemplates.map((template, index) => ({
+    ...template,
+    id: `legacy-routine-${index + 1}`,
+    custom: true,
+    exercises: template.exercises.map((exercise) => [...exercise]),
+  }));
+}
+
+function scopedDataExists(uid) {
+  try {
+    return [STORE_KEY, CUSTOM_KEY, PROFILE_KEY, SYNC_META_KEY]
+      .some((key) => localStorage.getItem(storageKey(key, uid)) !== null);
+  } catch {
+    return false;
+  }
+}
+
+function legacyDataIsPersonalized() {
+  if (loadHistory("").length > 0 || loadCustomTemplates("").length > 0) return true;
+  const profile = readJson(PROFILE_KEY, null);
+  if (!profile || typeof profile !== "object") return false;
+  const days = Array.isArray(profile.trainingDays) ? profile.trainingDays : DEFAULT_TRAINING_DAYS;
+  const untouchedDays = days.length === DEFAULT_TRAINING_DAYS.length
+    && DEFAULT_TRAINING_DAYS.every((day) => days.includes(day));
+  const settings = profile.settings || {};
+  const untouchedSettings = settings.autoRest !== false
+    && settings.vibration !== false
+    && (!settings.defaultRest || Number(settings.defaultRest) === 90);
+  return Number(profile.weight) !== 82
+    || Number(profile.height) !== 178
+    || String(profile.goal || "Hipertrofia") !== "Hipertrofia"
+    || Number(profile.frequency || 6) !== 6
+    || Boolean(profile.photoDataUrl)
+    || !untouchedDays
+    || !untouchedSettings;
+}
+
+function saveActiveAccount(updatedAt = 0) {
+  try {
+    localStorage.setItem(storageKey(STORE_KEY), JSON.stringify(state.history));
+    localStorage.setItem(storageKey(CUSTOM_KEY), JSON.stringify(state.customTemplates));
+    localStorage.setItem(storageKey(PROFILE_KEY), JSON.stringify(state.profile));
+    localStorage.setItem(storageKey(SYNC_META_KEY), JSON.stringify({ updatedAt, schemaVersion: DATA_SCHEMA_VERSION }));
+  } catch {}
+}
+
+function activateCloudUser(userOrUid) {
+  const uid = typeof userOrUid === "string" ? userOrUid : userOrUid?.uid;
   if (!uid) return;
-  let previousOwner = null;
-  try { previousOwner = localStorage.getItem(LOCAL_OWNER_KEY); } catch {}
-  if (!previousOwner || previousOwner === uid) {
-    try { localStorage.setItem(LOCAL_OWNER_KEY, uid); } catch {}
-    return;
+
+  let legacyOwner = null;
+  try { legacyOwner = localStorage.getItem(LOCAL_OWNER_KEY); } catch {}
+  const hasScopedData = scopedDataExists(uid);
+  const shouldMigrateLegacy = !hasScopedData
+    && legacyDataIsPersonalized()
+    && (legacyOwner === uid || !legacyOwner);
+  activeStorageUid = uid;
+
+  if (hasScopedData) {
+    state.history = loadHistory(uid);
+    state.customTemplates = loadCustomTemplates(uid);
+    state.profile = loadProfile(uid);
+  } else if (shouldMigrateLegacy) {
+    state.history = loadHistory("");
+    const savedTemplates = loadCustomTemplates("");
+    state.customTemplates = state.history.length
+      ? [...savedTemplates, ...legacyTemplateCopies()]
+      : savedTemplates;
+    state.profile = loadProfile("");
+    saveActiveAccount(localUpdatedAt(""));
+  } else {
+    state.history = [];
+    state.customTemplates = [];
+    state.profile = defaultProfile();
+    saveActiveAccount(0);
   }
 
-  state.history = [];
-  state.customTemplates = [];
-  state.profile = defaultProfile();
-  try {
-    localStorage.setItem(STORE_KEY, "[]");
-    localStorage.setItem(CUSTOM_KEY, "[]");
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(state.profile));
-    localStorage.setItem(SYNC_META_KEY, JSON.stringify({ updatedAt: 0 }));
-    localStorage.setItem(LOCAL_OWNER_KEY, uid);
-  } catch {}
+  state.active = null;
+  state.restSeconds = 0;
+  state.progressExercise = "";
+  try { localStorage.setItem(LOCAL_OWNER_KEY, uid); } catch {}
 }
 
 function authGateActive() {
@@ -279,7 +377,7 @@ function setCloudStatus(next = {}) {
 }
 
 function allTemplates() {
-  return [...state.customTemplates, ...templates];
+  return [...state.customTemplates];
 }
 
 function formatNumber(value) {
@@ -355,9 +453,13 @@ function buildWeek() {
 }
 
 function templateForDay(day) {
-  const trainingDays = state.profile.trainingDays || DEFAULT_TRAINING_DAYS;
+  const trainingDays = state.profile.trainingDays || [];
+  if (!trainingDays.length) {
+    return { ...restTemplate, name: "Crie seu primeiro treino", group: "Sua rotina", day, needsSetup: true };
+  }
   if (!trainingDays.includes(day)) return { ...restTemplate, day };
-  return state.customTemplates.find((template) => template.day === day) || templates.find((template) => template.day === day) || (day === "DOM" ? { ...templates[5], day: "DOM" } : templates[1]);
+  return state.customTemplates.find((template) => template.day === day)
+    || { ...restTemplate, name: "Treino não configurado", group: "Sua rotina", day, needsSetup: true };
 }
 
 function currentWeekTemplate() {
@@ -366,6 +468,7 @@ function currentWeekTemplate() {
 
 function getCoachInsight() {
   const template = currentWeekTemplate();
+  if (template.needsSetup) return { title: "Monte sua rotina", text: "Crie um treino com seus exercícios, séries e cargas.", value: "CRIAR" };
   const first = template.exercises?.[0];
   if (!first) return { title: "Recuperação também é progresso", text: "Priorize sono, mobilidade e hidratação hoje.", value: "DESCANSO" };
   const name = first[0];
@@ -441,16 +544,13 @@ function renderAuthScreen() {
   const checking = !state.cloud.authResolved;
   const failed = state.cloud.status === "error";
   viewRoot.innerHTML = `<div class="auth-screen">
-    <div class="auth-glow auth-glow-one"></div><div class="auth-glow auth-glow-two"></div>
     <section class="auth-shell" aria-live="polite">
       <div class="auth-brand-mark">${icon("dumbbell")}</div>
       <p class="auth-kicker">MEU TREINO</p>
-      <h1>${checking ? "Preparando seu treino" : failed ? "Vamos tentar novamente" : "Sua evolução, sempre com você."}</h1>
-      <p class="auth-copy">${checking ? "Verificando sua sessão com segurança..." : "Entre com sua conta Google para sincronizar treinos, cargas, recordes e progresso."}</p>
-      <div class="auth-card">
-        ${checking ? `<div class="auth-loading"><span class="auth-spinner"></span><strong>Conectando</strong><small>Isso leva só alguns segundos.</small></div>` : `<button class="google-login-button" data-action="cloud-login">${googleMark()}<span>Continuar com Google</span></button><div class="auth-security">${icon("cloud")}<span><strong>Sincronização automática</strong><small>Se ficar sem internet, o treino continua salvo no aparelho.</small></span></div>`}
-      </div>
-      <p class="auth-footnote">Seus dados ficam vinculados à sua conta e não são compartilhados com outros usuários.</p>
+      <h1>${checking ? "Preparando seu treino" : failed ? "Tente entrar novamente" : "Seu treino, do seu jeito."}</h1>
+      <p class="auth-copy">${checking ? "Carregando sua conta..." : "Entre para acessar seus treinos e acompanhar sua evolução."}</p>
+      ${checking ? `<div class="auth-loading"><span class="auth-spinner"></span><small>Conectando</small></div>` : `<button class="google-login-button" data-action="cloud-login">${googleMark()}<span>Continuar com Google</span></button>`}
+      <p class="auth-footnote">Dados privados e sincronizados com sua conta.</p>
     </section>
   </div>`;
 }
@@ -475,20 +575,24 @@ function renderHome() {
   const streak = workoutStreak();
   const completedDates = new Set(state.history.map((item) => dateKey(new Date(item.completedAt))));
   const insight = getCoachInsight();
+  const greeting = currentGreeting();
+  const firstName = profileFirstName();
+  const hasWorkout = selected.exercises.length > 0;
+  const needsSetup = Boolean(selected.needsSetup);
 
   viewRoot.innerHTML = `<div class="screen-page home-page">
     <header class="welcome-header">
-      <div><p class="eyebrow">BOM DIA</p><h1>Bom dia, <span>Cauê</span></h1><p>Foco no hoje, resultado no amanhã.</p></div>
+      <div><p class="eyebrow">${escapeHtml(greeting.toUpperCase())}</p><h1>${escapeHtml(greeting)}, <span>${escapeHtml(firstName)}</span></h1><p>Foco no hoje, resultado no amanhã.</p></div>
       <button class="avatar" data-action="nav" data-view="perfil" aria-label="Abrir perfil">${profileAvatarContent()}</button>
     </header>
     <section class="today-card">
       <img class="today-photo" src="assets/hero-costas.png" alt="Atleta em treino de costas" />
       <div class="today-overlay"></div>
       <div class="today-content">
-        <div class="today-kicker">${icon(selected.exercises.length ? "dumbbell" : "fire")} ${selected.exercises.length ? "TREINO DE HOJE" : "RECUPERAÇÃO"}</div>
+        <div class="today-kicker">${icon(hasWorkout ? "dumbbell" : needsSetup ? "plus" : "fire")} ${hasWorkout ? "TREINO DE HOJE" : needsSetup ? "PRIMEIRO PASSO" : "RECUPERAÇÃO"}</div>
         <h2>${escapeHtml(selected.name)}</h2>
-        <div class="today-meta">${selected.exercises.length ? `<span>${icon("dumbbell")} ${selected.exercises.length} exercícios</span><span>${icon("clock")} ${selected.duration} min</span>` : `<span>${icon("activity")} Mobilidade leve e recuperação</span>`}</div>
-        <button class="primary-button" ${selected.exercises.length ? 'data-action="start-day"' : "disabled"}><span class="button-label">${selected.exercises.length ? "Iniciar treino" : "Descanso programado"}</span><span class="button-icon">${icon(selected.exercises.length ? "chevron" : "check")}</span></button>
+        <div class="today-meta">${hasWorkout ? `<span>${icon("dumbbell")} ${selected.exercises.length} exercícios</span><span>${icon("clock")} ${selected.duration} min</span>` : needsSetup ? `<span>${icon("activity")} Personalize exercícios, séries e cargas</span>` : `<span>${icon("activity")} Mobilidade leve e recuperação</span>`}</div>
+        <button class="primary-button" ${hasWorkout ? 'data-action="start-day"' : needsSetup ? 'data-action="open-builder"' : "disabled"}><span class="button-label">${hasWorkout ? "Iniciar treino" : needsSetup ? "Criar treino" : "Descanso programado"}</span><span class="button-icon">${icon(hasWorkout ? "chevron" : needsSetup ? "plus" : "check")}</span></button>
       </div>
     </section>
     <section class="week-card">
@@ -518,10 +622,10 @@ function renderWorkouts() {
     <header class="page-header"><div><p class="eyebrow">SUA ROTINA</p><h1>Meus treinos</h1><p>Planeje a semana e registre cada evolução.</p></div><button class="builder-button" data-action="open-builder">${icon("plus")} Novo</button></header>
     <div class="month-strip"><div>${icon("calendar")}<span>${escapeHtml(month[0].toUpperCase()+month.slice(1))}</span></div><strong>${currentMonthWorkouts().length} treinos</strong></div>
     <section class="routine-list">
-      ${routineTemplates.map((template,index) => {
+      ${routineTemplates.length ? routineTemplates.map((template,index) => {
         const day = week.find((item) => item.key === template.day);
         return `<article class="routine-card"><div class="routine-day" style="--accent:${template.color}"><span>${template.day}</span><strong>${day?.date ?? index+3}</strong></div><div class="routine-info"><span>${escapeHtml(template.group)}${template.custom ? ' • <b>PERSONALIZADO</b>' : ''}</span><h2>${escapeHtml(template.name)}</h2><div>${icon("dumbbell")} ${template.exercises.length} exercícios ${icon("clock")} ${template.duration} min</div></div><div class="routine-controls">${template.custom ? `<button class="routine-delete" data-action="ask-delete-template" data-index="${index}" aria-label="Excluir ${escapeHtml(template.name)}">${icon("trash")}</button>` : ""}<button class="routine-play" data-action="start-template" data-index="${index}" aria-label="Iniciar ${escapeHtml(template.name)}">${icon("play")}</button></div></article>`;
-      }).join("")}
+      }).join("") : `<div class="empty-list">${icon("dumbbell")}<span><strong>Sua rotina começa aqui</strong><small>Toque em Novo para criar seu primeiro treino.</small></span></div>`}
     </section>
     <div class="history-title"><h2>Histórico recente</h2>${icon("history")}</div>
     <section class="history-list">${recent.length ? recent.map((workout) => historyRow(workout)).join("") : `<div class="empty-list">${icon("history")}<span><strong>Nenhum treino concluído ainda</strong><small>Finalize seu primeiro treino para começar o histórico.</small></span></div>`}</section>
@@ -554,6 +658,8 @@ function getProgressSeries() {
 }
 
 function renderProgress() {
+  const exerciseNames = progressExerciseNames();
+  if (!exerciseNames.includes(state.progressExercise)) state.progressExercise = exerciseNames[0] || "";
   const series = getProgressSeries();
   const hasData = series.length > 0;
   const values = series.map((item) => item.value);
@@ -590,10 +696,10 @@ function renderProgress() {
       <button class="${state.metric === "volume" ? "active" : ""}" data-action="metric" data-metric="volume">${icon("target")} Volume</button>
       <button class="${state.metric === "reps" ? "active" : ""}" data-action="metric" data-metric="reps">${icon("activity")} Repetições</button>
     </div>
-    <div class="exercise-select-wrap"><label for="progress-exercise">Exercício</label><select id="progress-exercise" class="exercise-select">${progressExerciseNames().map((name)=>`<option ${name===state.progressExercise?"selected":""}>${escapeHtml(name)}</option>`).join("")}</select></div>
+    <div class="exercise-select-wrap"><label for="progress-exercise">Exercício</label><select id="progress-exercise" class="exercise-select" ${exerciseNames.length ? "" : "disabled"}>${exerciseNames.length ? exerciseNames.map((name)=>`<option ${name===state.progressExercise?"selected":""}>${escapeHtml(name)}</option>`).join("") : '<option>Nenhum exercício registrado</option>'}</select></div>
     <section class="progress-chart-card">
-      <div class="chart-head"><div><span>EXERCÍCIO</span><h2>${escapeHtml(state.progressExercise)}</h2></div><div><strong>${hasData ? `${display(record)}${suffix}` : "—"}</strong><small>${hasData ? "Máxima atual" : "Sem registros"}</small></div></div>
-      <div class="chart-wrap">${hasData ? `<svg viewBox="0 0 320 175" role="img" aria-label="Gráfico de evolução de ${escapeHtml(state.progressExercise)}"><defs><linearGradient id="areaFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#a7f432" stop-opacity=".24"/><stop offset="100%" stop-color="#a7f432" stop-opacity="0"/></linearGradient></defs>${[46,81,116,151].map((y)=>`<line x1="12" x2="308" y1="${y}" y2="${y}" class="chart-grid-line"/>`).join("")}${points.length > 1 ? `<polygon points="18,158 ${pointString} 294,158" fill="url(#areaFill)"/><polyline points="${pointString}" class="chart-line"/>` : ""}${points.map((point)=>`<circle cx="${point.x}" cy="${point.y}" r="4.6" class="chart-dot"/><text x="${point.x}" y="172" text-anchor="middle" class="chart-label">${new Intl.DateTimeFormat("pt-BR",{day:"2-digit",month:"2-digit"}).format(new Date(point.date))}</text>`).join("")}</svg>` : `<div class="chart-empty">${icon("chart")}<strong>Seu gráfico começa no primeiro treino</strong><small>Registre séries de ${escapeHtml(state.progressExercise)} para acompanhar a evolução real.</small></div>`}</div>
+      <div class="chart-head"><div><span>EXERCÍCIO</span><h2>${escapeHtml(state.progressExercise || "Sem registros")}</h2></div><div><strong>${hasData ? `${display(record)}${suffix}` : "—"}</strong><small>${hasData ? "Máxima atual" : "Sem registros"}</small></div></div>
+      <div class="chart-wrap">${hasData ? `<svg viewBox="0 0 320 175" role="img" aria-label="Gráfico de evolução de ${escapeHtml(state.progressExercise)}"><defs><linearGradient id="areaFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#a7f432" stop-opacity=".24"/><stop offset="100%" stop-color="#a7f432" stop-opacity="0"/></linearGradient></defs>${[46,81,116,151].map((y)=>`<line x1="12" x2="308" y1="${y}" y2="${y}" class="chart-grid-line"/>`).join("")}${points.length > 1 ? `<polygon points="18,158 ${pointString} 294,158" fill="url(#areaFill)"/><polyline points="${pointString}" class="chart-line"/>` : ""}${points.map((point)=>`<circle cx="${point.x}" cy="${point.y}" r="4.6" class="chart-dot"/><text x="${point.x}" y="172" text-anchor="middle" class="chart-label">${new Intl.DateTimeFormat("pt-BR",{day:"2-digit",month:"2-digit"}).format(new Date(point.date))}</text>`).join("")}</svg>` : `<div class="chart-empty">${icon("chart")}<strong>Seu gráfico começa no primeiro treino</strong><small>Crie um treino e registre suas séries para acompanhar a evolução real.</small></div>`}</div>
     </section>
     <section class="progress-stats">
       <article>${icon("trophy","yellow")}<span>Recorde</span><strong>${hasData ? `${display(record)}${suffix}` : "—"}</strong><small>Melhor marca</small></article>
@@ -618,19 +724,29 @@ function renderProfile() {
   const cloudText = cloud.user ? `${cloud.user.email || cloud.user.displayName || "Conta Google"} • dados salvos automaticamente` : "Entre com Google para sincronizar seus dados.";
   const cloudAction = cloud.user ? "cloud-logout" : "cloud-login";
   const cloudButton = cloud.user ? "Sair" : "Conectar";
-  const trainingDaysLabel = (profile.trainingDays || DEFAULT_TRAINING_DAYS).join(" • ");
+  const trainingDaysLabel = profile.trainingDays?.length ? profile.trainingDays.join(" • ") : "Nenhum dia definido";
   const settingsLabel = `${Number(settings.defaultRest) || 90}s padrão • ${settings.autoRest === false ? "descanso manual" : "descanso automático"}`;
+  const goalLabel = profile.goal || "Objetivo não definido";
+  const frequencyLabel = profile.frequency ? `${profile.frequency}x por semana` : "Defina seus dias";
+  const physicalLabel = profile.weight || profile.height
+    ? `${profile.weight ? `${formatWeight(profile.weight)} kg` : "Peso não informado"} • ${profile.height ? `${formatNumber(profile.height)} cm` : "Altura não informada"}`
+    : "Dados ainda não informados";
+  const workoutsPerLevel = 5;
+  const level = Math.floor(state.history.length / workoutsPerLevel) + 1;
+  const levelProgress = Math.round(((state.history.length % workoutsPerLevel) / workoutsPerLevel) * 100);
+  const remaining = workoutsPerLevel - (state.history.length % workoutsPerLevel);
+  const levelTitle = state.history.length === 0 ? "Começando agora" : state.history.length < 5 ? "Construindo constância" : state.history.length < 20 ? "Atleta consistente" : "Ritmo avançado";
   viewRoot.innerHTML = `<div class="screen-page profile-page">
     <header class="profile-hero"><input class="profile-photo-input" id="profile-photo-input" type="file" accept="image/*" aria-label="Escolher foto de perfil"><button class="profile-avatar" data-action="change-avatar" aria-label="Alterar foto de perfil">${profileAvatarContent()}<span class="profile-avatar-edit">${icon("camera")}</span></button><p class="eyebrow">SEU PERFIL</p><h1>${escapeHtml(profileDisplayName())}</h1><p>Constância vence motivação.</p></header>
     <section class="profile-stats"><article><strong>${state.history.length}</strong><span>Treinos</span></article><article><strong>${streak}</strong><span>Sequência</span></article><article><strong>${records}</strong><span>Recordes</span></article></section>
     <section class="cloud-card cloud-${escapeHtml(cloud.status)}"><span class="cloud-icon">${icon("cloud")}</span><div><small>CONTA GOOGLE</small><strong>${escapeHtml(cloudTitle)}</strong><p>${escapeHtml(cloudText)}</p></div><button data-action="${cloudAction}">${cloudButton}${cloud.user ? icon("log-out") : icon("chevron")}</button></section>
     <section class="profile-card">
-      <button data-action="edit-profile">${`<span class="profile-option-icon">${icon("target")}</span>`}<span><strong>Minha meta</strong><small>${escapeHtml(profile.goal)} • ${profile.frequency}x por semana</small></span>${icon("chevron")}</button>
-      <button data-action="edit-profile">${`<span class="profile-option-icon">${icon("activity")}</span>`}<span><strong>Dados físicos</strong><small>${formatWeight(profile.weight)} kg • ${formatNumber(profile.height)} cm</small></span>${icon("chevron")}</button>
+      <button data-action="edit-profile">${`<span class="profile-option-icon">${icon("target")}</span>`}<span><strong>Minha meta</strong><small>${escapeHtml(goalLabel)} • ${escapeHtml(frequencyLabel)}</small></span>${icon("chevron")}</button>
+      <button data-action="edit-profile">${`<span class="profile-option-icon">${icon("activity")}</span>`}<span><strong>Dados físicos</strong><small>${escapeHtml(physicalLabel)}</small></span>${icon("chevron")}</button>
       <button data-action="edit-training-days">${`<span class="profile-option-icon">${icon("calendar")}</span>`}<span><strong>Dias de treino</strong><small>${escapeHtml(trainingDaysLabel)}</small></span>${icon("chevron")}</button>
       <button data-action="edit-settings">${`<span class="profile-option-icon">${icon("settings")}</span>`}<span><strong>Configurações</strong><small>${escapeHtml(settingsLabel)}</small></span>${icon("chevron")}</button>
     </section>
-    <section class="level-card"><div><span>NÍVEL 12</span><h2>Atleta consistente</h2><p>Mais 3 treinos para o próximo nível.</p></div><div class="level-ring">72%</div></section>
+    <section class="level-card"><div><span>NÍVEL ${level}</span><h2>${escapeHtml(levelTitle)}</h2><p>${state.history.length ? `Mais ${remaining} ${remaining === 1 ? "treino" : "treinos"} para o próximo nível.` : "Conclua seu primeiro treino para evoluir."}</p></div><div class="level-ring">${levelProgress}%</div></section>
   </div>`;
 }
 
@@ -728,7 +844,7 @@ function finishWorkout() {
 }
 
 function showSummary(summary) {
-  overlayRoot.innerHTML = `<div class="modal-backdrop"><div class="summary-modal" role="dialog" aria-modal="true" aria-label="Resumo do treino"><button class="modal-close" data-action="close-modal" aria-label="Fechar">×</button><span class="summary-trophy">${icon("trophy")}</span><p class="eyebrow">TREINO CONCLUÍDO</p><h2>Mandou bem, Cauê!</h2><p>Mais um treino registrado e mais um passo na sua evolução.</p><div class="summary-grid"><div>${icon("clock")}<strong>${Math.max(1,Math.round(summary.duration/60))} min</strong><span>Duração</span></div><div>${icon("dumbbell")}<strong>${formatNumber(summary.volume)} kg</strong><span>Volume</span></div><div>${icon("check")}<strong>${summary.sets}</strong><span>Séries</span></div></div><button class="primary-button modal-button" data-action="summary-progress"><span class="button-label">Ver meu progresso</span><span class="button-icon">${icon("chevron")}</span></button></div></div>`;
+  overlayRoot.innerHTML = `<div class="modal-backdrop"><div class="summary-modal" role="dialog" aria-modal="true" aria-label="Resumo do treino"><button class="modal-close" data-action="close-modal" aria-label="Fechar">×</button><span class="summary-trophy">${icon("trophy")}</span><p class="eyebrow">TREINO CONCLUÍDO</p><h2>Mandou bem, ${escapeHtml(profileFirstName())}!</h2><p>Mais um treino registrado e mais um passo na sua evolução.</p><div class="summary-grid"><div>${icon("clock")}<strong>${Math.max(1,Math.round(summary.duration/60))} min</strong><span>Duração</span></div><div>${icon("dumbbell")}<strong>${formatNumber(summary.volume)} kg</strong><span>Volume</span></div><div>${icon("check")}<strong>${summary.sets}</strong><span>Séries</span></div></div><button class="primary-button modal-button" data-action="summary-progress"><span class="button-label">Ver meu progresso</span><span class="button-icon">${icon("chevron")}</span></button></div></div>`;
 }
 
 function showToast(message) {
@@ -743,7 +859,7 @@ function builderExerciseRow(index) {
 }
 
 function showWorkoutBuilder() {
-  overlayRoot.innerHTML = `<div class="modal-backdrop builder-backdrop"><form class="builder-modal" id="workout-builder-form"><button class="modal-close" type="button" data-action="close-modal" aria-label="Fechar">×</button><p class="eyebrow">NOVO TREINO</p><h2>Monte sua rotina</h2><p>Defina o dia, os exercícios e a base de carga. Você poderá ajustar tudo durante o treino.</p><div class="builder-form-grid"><label class="wide">Nome do treino<input name="workout_name" required maxlength="36" placeholder="Ex.: Upper A"></label><label>Dia<select name="workout_day"><option>SEG</option><option>TER</option><option>QUA</option><option>QUI</option><option>SEX</option><option>SÁB</option><option>DOM</option></select></label><label>Duração<input name="workout_duration" type="number" min="10" max="180" value="50"></label><label class="wide">Grupo<select name="workout_group"><option>Peito e braços</option><option>Costas e braços</option><option>Inferiores</option><option>Ombros</option><option>Full body</option><option>Condicionamento</option><option>Personalizado</option></select></label></div><div class="builder-section-head"><strong>Exercícios</strong><button type="button" data-action="add-builder-exercise">${icon("plus")} Adicionar</button></div><div id="builder-exercise-list">${builderExerciseRow(0)}${builderExerciseRow(1)}${builderExerciseRow(2)}</div><button class="primary-button builder-save" type="submit"><span class="button-label">Salvar treino</span><span class="button-icon">${icon("check")}</span></button></form></div>`;
+  overlayRoot.innerHTML = `<div class="modal-backdrop builder-backdrop"><form class="builder-modal" id="workout-builder-form"><button class="modal-close" type="button" data-action="close-modal" aria-label="Fechar">×</button><p class="eyebrow">NOVO TREINO</p><h2>Monte sua rotina</h2><p>Defina o dia, os exercícios e a base de carga. Você poderá ajustar tudo durante o treino.</p><div class="builder-form-grid"><label class="wide">Nome do treino<input name="workout_name" required maxlength="36" placeholder="Ex.: Upper A"></label><label>Dia<select name="workout_day">${WEEK_DAYS.map((day) => `<option ${day === state.selectedDay ? "selected" : ""}>${day}</option>`).join("")}</select></label><label>Duração<input name="workout_duration" type="number" min="10" max="180" value="50"></label><label class="wide">Grupo<select name="workout_group"><option>Peito e braços</option><option>Costas e braços</option><option>Inferiores</option><option>Ombros</option><option>Full body</option><option>Condicionamento</option><option>Personalizado</option></select></label></div><div class="builder-section-head"><strong>Exercícios</strong><button type="button" data-action="add-builder-exercise">${icon("plus")} Adicionar</button></div><div id="builder-exercise-list">${builderExerciseRow(0)}${builderExerciseRow(1)}${builderExerciseRow(2)}</div><button class="primary-button builder-save" type="submit"><span class="button-label">Salvar treino</span><span class="button-icon">${icon("check")}</span></button></form></div>`;
 }
 
 function showDeleteTemplateConfirmation(index) {
@@ -754,7 +870,7 @@ function showDeleteTemplateConfirmation(index) {
 
 function showProfileEditor() {
   const profile = state.profile;
-  overlayRoot.innerHTML = `<div class="modal-backdrop"><form class="builder-modal profile-editor" id="profile-form"><button class="modal-close" type="button" data-action="close-modal" aria-label="Fechar">×</button><p class="eyebrow">PERFIL FÍSICO</p><h2>Seus dados</h2><p>Peso, altura e objetivo ficam sincronizados com sua conta. A frequência é definida em Dias de treino.</p><div class="builder-form-grid"><label>Peso (kg)<input name="weight" type="number" min="30" max="300" step="0.1" value="${profile.weight}"></label><label>Altura (cm)<input name="height" type="number" min="120" max="230" value="${profile.height}"></label><label class="wide">Objetivo<select name="goal"><option ${profile.goal === "Hipertrofia" ? "selected" : ""}>Hipertrofia</option><option ${profile.goal === "Força" ? "selected" : ""}>Força</option><option ${profile.goal === "Emagrecimento" ? "selected" : ""}>Emagrecimento</option><option ${profile.goal === "Condicionamento" ? "selected" : ""}>Condicionamento</option></select></label></div><button class="primary-button builder-save" type="submit"><span class="button-label">Salvar perfil</span><span class="button-icon">${icon("check")}</span></button></form></div>`;
+  overlayRoot.innerHTML = `<div class="modal-backdrop"><form class="builder-modal profile-editor" id="profile-form"><button class="modal-close" type="button" data-action="close-modal" aria-label="Fechar">×</button><p class="eyebrow">PERFIL FÍSICO</p><h2>Seus dados</h2><p>Peso, altura e objetivo ficam sincronizados com sua conta. A frequência é definida em Dias de treino.</p><div class="builder-form-grid"><label>Peso (kg)<input name="weight" type="number" min="30" max="300" step="0.1" value="${profile.weight || ""}" placeholder="Ex.: 82"></label><label>Altura (cm)<input name="height" type="number" min="120" max="230" value="${profile.height || ""}" placeholder="Ex.: 178"></label><label class="wide">Objetivo<select name="goal"><option value="" ${profile.goal ? "" : "selected"} disabled>Selecione seu objetivo</option><option ${profile.goal === "Hipertrofia" ? "selected" : ""}>Hipertrofia</option><option ${profile.goal === "Força" ? "selected" : ""}>Força</option><option ${profile.goal === "Emagrecimento" ? "selected" : ""}>Emagrecimento</option><option ${profile.goal === "Condicionamento" ? "selected" : ""}>Condicionamento</option></select></label></div><button class="primary-button builder-save" type="submit"><span class="button-label">Salvar perfil</span><span class="button-icon">${icon("check")}</span></button></form></div>`;
 }
 
 function showTrainingDaysEditor() {
@@ -820,7 +936,13 @@ document.addEventListener("click", (event) => {
   const action = button.dataset.action;
   if (action === "nav") { state.view = button.dataset.view; render(); window.scrollTo({top:0,behavior:"smooth"}); }
   if (action === "select-day") { state.selectedDay = button.dataset.day; renderHome(); }
-  if (action === "start-day" || action === "quick-start") startWorkout(currentWeekTemplate());
+  if (action === "start-day") startWorkout(currentWeekTemplate());
+  if (action === "quick-start") {
+    const template = currentWeekTemplate();
+    if (template.needsSetup) showWorkoutBuilder();
+    else if (template.exercises.length) startWorkout(template);
+    else showToast("Hoje está marcado como descanso.");
+  }
   if (action === "start-template") startWorkout(allTemplates()[Number(button.dataset.index)]);
   if (action === "open-builder") showWorkoutBuilder();
   if (action === "add-builder-exercise") {
@@ -903,12 +1025,20 @@ document.addEventListener("submit", (event) => {
     const group = String(data.get("workout_group") || "Personalizado");
     const colors = { "Peito e braços":"#ff8a3d", "Costas e braços":"#a7f432", "Inferiores":"#65d9ff", "Ombros":"#ad92ff", "Full body":"#ffda5c", "Condicionamento":"#70e3c3", "Personalizado":"#a7f432" };
     const template = { id:`custom-${Date.now()}`, custom:true, name:String(data.get("workout_name")||"Meu treino").trim().slice(0,36), group, day:String(data.get("workout_day")||"SEG"), color:colors[group]||"#a7f432", duration:Math.max(10,Number(data.get("workout_duration"))||50), exercises };
-    state.customTemplates.unshift(template); persistCustomTemplates(); overlayRoot.innerHTML=""; state.view="treinos"; render(); showToast("Treino personalizado criado.");
+    state.customTemplates.unshift(template);
+    if (!state.profile.trainingDays.includes(template.day)) {
+      const trainingDays = WEEK_DAYS.filter((day) => [...state.profile.trainingDays, template.day].includes(day));
+      state.profile = normalizeProfile({ ...state.profile, trainingDays });
+      persistProfile();
+    }
+    persistCustomTemplates(); overlayRoot.innerHTML=""; state.view="treinos"; render(); showToast("Treino personalizado criado.");
   }
   if (event.target.id === "profile-form") {
     event.preventDefault();
     const data = new FormData(event.target);
-    state.profile = normalizeProfile({ ...state.profile, weight:Math.max(30,Number(data.get("weight"))||82), height:Math.max(120,Number(data.get("height"))||178), goal:String(data.get("goal")||"Hipertrofia") });
+    const weight = Number(data.get("weight")) || 0;
+    const height = Number(data.get("height")) || 0;
+    state.profile = normalizeProfile({ ...state.profile, weight:weight ? Math.max(30,weight) : 0, height:height ? Math.max(120,height) : 0, goal:String(data.get("goal")||"") });
     persistProfile(); overlayRoot.innerHTML=""; renderProfile(); showToast("Perfil atualizado.");
   }
   if (event.target.id === "training-days-form") {
@@ -954,6 +1084,7 @@ window.dispatchEvent(new Event("gym:bridge-ready"));
 const firstWeek = buildWeek();
 state.selectedDay = firstWeek.find((day)=>day.today)?.key || "SEX";
 render();
+dismissLaunchSplash();
 
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
   navigator.serviceWorker

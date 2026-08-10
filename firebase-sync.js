@@ -24,6 +24,15 @@ function mergeById(remoteItems = [], localItems = []) {
   return [...merged.values()];
 }
 
+function isUntouchedLegacyProfile(profile) {
+  if (!profile || typeof profile !== "object") return false;
+  return Number(profile.weight) === 82
+    && Number(profile.height) === 178
+    && String(profile.goal || "") === "Hipertrofia"
+    && Number(profile.frequency) === 6
+    && !profile.photoDataUrl;
+}
+
 async function main() {
   const bridge = await getBridge();
 
@@ -74,8 +83,8 @@ async function main() {
     photoURL: user.photoURL || "",
   } : null;
 
-  const settingsRef = () => doc(db, "users", currentUser.uid, "app", "settings");
-  const workoutsRef = () => collection(db, "users", currentUser.uid, "workouts");
+  const settingsRef = (uid) => doc(db, "users", uid, "app", "settings");
+  const workoutsRef = (uid) => collection(db, "users", uid, "workouts");
 
   function setStatus(status, message) {
     bridge.setCloudStatus({ configured: true, authResolved, status, user: userInfo(currentUser), message });
@@ -93,7 +102,7 @@ async function main() {
     return queue;
   }
 
-  async function commitWorkoutDiff(snapshot) {
+  async function commitWorkoutDiff(snapshot, uid) {
     const localIds = new Set(snapshot.history.map(workoutId));
     const operations = [];
 
@@ -108,18 +117,18 @@ async function main() {
     for (let offset = 0; offset < operations.length; offset += 400) {
       const batch = writeBatch(db);
       operations.slice(offset, offset + 400).forEach((operation) => {
-        const ref = doc(db, "users", currentUser.uid, "workouts", operation.id);
+        const ref = doc(db, "users", uid, "workouts", operation.id);
         if (operation.type === "delete") batch.delete(ref);
-        else batch.set(ref, { ...operation.workout, ownerId: currentUser.uid });
+        else batch.set(ref, { ...operation.workout, ownerId: uid });
       });
       await batch.commit();
     }
 
-    knownRemoteWorkoutIds = localIds;
+    if (currentUser?.uid === uid) knownRemoteWorkoutIds = localIds;
   }
 
-  async function pushLocalState() {
-    if (!currentUser) return;
+  async function pushLocalState(expectedUid = currentUser?.uid) {
+    if (!expectedUid || currentUser?.uid !== expectedUid) return;
     if (!navigator.onLine) {
       setStatus("offline", "Offline • alterações seguras neste aparelho");
       return;
@@ -127,20 +136,20 @@ async function main() {
 
     setStatus("syncing", "Salvando alterações");
     const snapshot = bridge.getSnapshot();
-    await setDoc(settingsRef(), {
-      ownerId: currentUser.uid,
+    await setDoc(settingsRef(expectedUid), {
+      ownerId: expectedUid,
       profile: snapshot.profile,
       customTemplates: snapshot.customTemplates,
       updatedAt: snapshot.updatedAt || Date.now(),
       serverUpdatedAt: serverTimestamp(),
-      schemaVersion: 1,
+      schemaVersion: 2,
     });
-    await commitWorkoutDiff(snapshot);
-    setStatus("synced", "Tudo sincronizado");
+    await commitWorkoutDiff(snapshot, expectedUid);
+    if (currentUser?.uid === expectedUid) setStatus("synced", "Tudo sincronizado");
   }
 
-  async function hydrateFromCloud() {
-    if (!currentUser) return;
+  async function hydrateFromCloud(expectedUid = currentUser?.uid) {
+    if (!expectedUid || currentUser?.uid !== expectedUid) return;
     if (!navigator.onLine) {
       setStatus("offline", "Offline • usando dados deste aparelho");
       return;
@@ -148,21 +157,28 @@ async function main() {
 
     setStatus("syncing", "Buscando seus dados");
     const local = bridge.getSnapshot();
-    const [settingsSnapshot, workoutsSnapshot] = await Promise.all([getDoc(settingsRef()), getDocs(workoutsRef())]);
+    const [settingsSnapshot, workoutsSnapshot] = await Promise.all([getDoc(settingsRef(expectedUid)), getDocs(workoutsRef(expectedUid))]);
+    if (currentUser?.uid !== expectedUid) return;
     const remoteSettings = settingsSnapshot.exists() ? settingsSnapshot.data() : null;
     const remoteHistory = workoutsSnapshot.docs.map((item) => item.data());
     knownRemoteWorkoutIds = new Set(workoutsSnapshot.docs.map((item) => item.id));
 
     const remoteUpdatedAt = Number(remoteSettings?.updatedAt) || 0;
     const localIsNewer = Number(local.updatedAt) > remoteUpdatedAt;
-    const profile = localIsNewer ? local.profile : (remoteSettings?.profile || local.profile);
-    const customTemplates = mergeById(remoteSettings?.customTemplates || [], local.customTemplates || []);
+    const remoteTemplates = remoteSettings?.customTemplates || [];
+    const remoteProfileIsOnlyOldDemo = Number(remoteSettings?.schemaVersion || 1) < 2
+      && remoteHistory.length === 0
+      && remoteTemplates.length === 0
+      && isUntouchedLegacyProfile(remoteSettings?.profile);
+    const remoteProfile = remoteProfileIsOnlyOldDemo ? null : remoteSettings?.profile;
+    const profile = localIsNewer ? local.profile : (remoteProfile || local.profile);
+    const customTemplates = mergeById(remoteTemplates, local.customTemplates || []);
     const history = mergeById(remoteHistory, local.history || []).sort((a, b) => new Date(b.completedAt || 0) - new Date(a.completedAt || 0));
     const updatedAt = Math.max(Number(local.updatedAt) || 0, remoteUpdatedAt);
 
     bridge.applySnapshot({ profile, customTemplates, history, updatedAt });
     hydrated = true;
-    await pushLocalState();
+    await pushLocalState(expectedUid);
   }
 
   function activateSignedInUser(user) {
@@ -174,7 +190,7 @@ async function main() {
     if (userChanged) {
       hydrated = false;
       knownRemoteWorkoutIds = new Set();
-      bridge.activateUser(user.uid);
+      bridge.activateUser(userInfo(user));
     }
 
     setStatus(hydrated ? "synced" : "syncing", hydrated ? "Tudo sincronizado" : "Buscando seus dados");
@@ -182,7 +198,7 @@ async function main() {
       hydrationUserId = user.uid;
       enqueue(async () => {
         try {
-          await hydrateFromCloud();
+          await hydrateFromCloud(user.uid);
         } finally {
           if (hydrationUserId === user.uid) hydrationUserId = null;
         }
@@ -220,8 +236,9 @@ async function main() {
 
   window.addEventListener("gym:data-changed", () => {
     if (!currentUser) return;
+    const uid = currentUser.uid;
     clearTimeout(syncTimer);
-    syncTimer = setTimeout(() => enqueue(() => hydrated ? pushLocalState() : hydrateFromCloud()), 550);
+    syncTimer = setTimeout(() => enqueue(() => hydrated ? pushLocalState(uid) : hydrateFromCloud(uid)), 550);
   });
 
   window.addEventListener("offline", () => {
@@ -229,7 +246,10 @@ async function main() {
   });
 
   window.addEventListener("online", () => {
-    if (currentUser) enqueue(() => hydrated ? pushLocalState() : hydrateFromCloud());
+    if (currentUser) {
+      const uid = currentUser.uid;
+      enqueue(() => hydrated ? pushLocalState(uid) : hydrateFromCloud(uid));
+    }
   });
 
   onAuthStateChanged(auth, (user) => {

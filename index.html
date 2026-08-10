@@ -4,11 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#080a0b" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Meu Treino" />
     <meta name="description" content="Registre treinos, cargas, séries, frequência e acompanhe sua evolução." />
     <title>Meu Treino</title>
     <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
-    <link rel="manifest" href="manifest.webmanifest?v=10" />
-    <link rel="stylesheet" href="styles.css?v=10" />
+    <link rel="apple-touch-icon" href="assets/icon.svg" />
+    <link rel="manifest" href="manifest.webmanifest?v=12" />
+    <link rel="stylesheet" href="styles.css?v=12" />
+    <script>
+      if ((window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true || new URLSearchParams(window.location.search).get("source") === "pwa") {
+        document.documentElement.classList.add("standalone-launch");
+      }
+    </script>
   </head>
   <body>
     <svg class="icon-sprite" aria-hidden="true">
@@ -39,6 +49,15 @@
       <symbol id="i-log-out" viewBox="0 0 24 24"><path d="M10 5H5v14h5M14 8l4 4-4 4M9 12h9"/></symbol>
     </svg>
 
+    <div class="launch-splash" id="launch-splash" aria-hidden="true">
+      <div class="launch-brand">
+        <span class="launch-mark"><svg class="icon"><use href="#i-dumbbell"></use></svg></span>
+        <p>MEU TREINO</p>
+        <h1>Treine. Registre. Evolua.</h1>
+        <span class="launch-progress"><i></i></span>
+      </div>
+    </div>
+
     <main class="gym-app">
       <div class="phone-shell" id="phone-shell">
         <section id="view" aria-live="polite"></section>
@@ -48,7 +67,7 @@
       </div>
     </main>
 
-    <script src="app.js?v=10" defer></script>
-    <script type="module" src="firebase-sync.js?v=10"></script>
+    <script src="app.js?v=12" defer></script>
+    <script type="module" src="firebase-sync.js?v=12"></script>
   </body>
 </html>

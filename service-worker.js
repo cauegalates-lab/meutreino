@@ -1,4 +1,4 @@
-const CACHE = "meu-treino-v10";
+const CACHE = "meu-treino-v12";
 const ASSETS = ["./","./index.html","./styles.css","./app.js","./firebase-sync.js","./firebase-config.js","./manifest.webmanifest","./assets/icon.svg","./assets/hero-costas.png","./assets/puxada-alta.png","./assets/remada-baixa.png"];
 
 self.addEventListener("install", (event) => {

@@ -2,8 +2,11 @@
   "name": "Meu Treino",
   "short_name": "Treino",
   "description": "Treinos, cargas, séries e evolução.",
-  "start_url": "./index.html",
+  "id": "./",
+  "start_url": "./index.html?source=pwa",
+  "scope": "./",
   "display": "standalone",
+  "orientation": "portrait-primary",
   "background_color": "#080a0b",
   "theme_color": "#080a0b",
   "icons": [
