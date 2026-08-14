@@ -1,12 +1,14 @@
 import { appCheckSiteKey, firebaseConfig } from "../firebase-config.js";
 
 const FIREBASE_VERSION = "12.16.0";
-const FUNCTIONS_REGION = "southamerica-east1";
 const PLAN_NAME = "Meu Treino Pro";
+const PLAN_INSTALLMENTS = 12;
+const PLAN_INSTALLMENT_CENTS = 2999;
+const ONLINE_WINDOW_MS = 150000;
 const STATUS_LABELS = Object.freeze({
   active: "Ativo",
   pending: "Aguardando",
-  paused: "Pausado",
+  paused: "Bloqueado",
   cancelled: "Cancelado",
   expired: "Vencido",
 });
@@ -28,7 +30,7 @@ const state = {
   generatedAt: null,
   truncated: false,
   refreshTimer: null,
-  calls: null,
+  firestore: null,
 };
 
 function escapeHtml(value) {
@@ -84,6 +86,63 @@ function formatDate(value, includeTime = false) {
     : { day: "2-digit", month: "short", year: "numeric" }).format(date);
 }
 
+function timestampMillis(value) {
+  if (!value) return null;
+  if (typeof value.toMillis === "function") return value.toMillis();
+  if (typeof value.toDate === "function") return value.toDate().getTime();
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+function addUtcMonths(value, months) {
+  const source = new Date(value);
+  const day = source.getUTCDate();
+  const result = new Date(Date.UTC(source.getUTCFullYear(), source.getUTCMonth() + months, 1, 12));
+  const lastDay = new Date(Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0, 12)).getUTCDate();
+  result.setUTCDate(Math.min(day, lastDay));
+  return result.getTime();
+}
+
+function createBillingSchedule(startAt = Date.now()) {
+  const { Timestamp } = state.firestore;
+  return {
+    plan: "pro",
+    planName: PLAN_NAME,
+    amountCents: PLAN_INSTALLMENT_CENTS,
+    totalInstallments: PLAN_INSTALLMENTS,
+    startedAt: Timestamp.fromMillis(startAt),
+    installments: Array.from({ length: PLAN_INSTALLMENTS }, (_, index) => ({
+      number: index + 1,
+      amountCents: PLAN_INSTALLMENT_CENTS,
+      dueAt: Timestamp.fromMillis(addUtcMonths(startAt, index)),
+      status: "pending",
+      paidAt: null,
+      pixCode: "",
+      qrCodeUrl: "",
+    })),
+  };
+}
+
+function serializeBilling(value) {
+  if (!value || !Array.isArray(value.installments)) return null;
+  return {
+    plan: "pro",
+    planName: PLAN_NAME,
+    amountCents: PLAN_INSTALLMENT_CENTS,
+    totalInstallments: PLAN_INSTALLMENTS,
+    startedAt: timestampMillis(value.startedAt),
+    installments: value.installments.slice(0, PLAN_INSTALLMENTS).map((installment, index) => ({
+      number: Number(installment?.number) || index + 1,
+      amountCents: Number(installment?.amountCents) || PLAN_INSTALLMENT_CENTS,
+      dueAt: timestampMillis(installment?.dueAt),
+      status: installment?.status === "paid" ? "paid" : "pending",
+      paidAt: timestampMillis(installment?.paidAt),
+      pixCode: String(installment?.pixCode || ""),
+      qrCodeUrl: String(installment?.qrCodeUrl || ""),
+    })),
+  };
+}
+
 function inputDate(value) {
   const date = value && Number(value) > Date.now() ? new Date(Number(value)) : new Date(Date.now() + 30 * 86400000);
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
@@ -136,13 +195,15 @@ function renderLogin() {
 }
 
 function renderDenied() {
+  const uid = state.user?.uid || "";
   root.innerHTML = `
     <section class="login-page">
       <div class="denied-card">
         <div class="login-logo">${icon("lock")}</div>
         <p class="eyebrow">ACESSO NEGADO</p>
         <h1>Conta sem permissão</h1>
-        <p>${escapeHtml(state.error || "Use a conta configurada como administradora nas Functions do Firebase.")}</p>
+        <p>${escapeHtml(state.error || "Cadastre esta conta na coleção admins do Firestore.")}</p>
+        ${uid ? `<small class="login-note">UID para cadastrar: ${escapeHtml(uid)}</small>` : ""}
         <button class="ghost-button" data-action="sign-out">Entrar com outra conta</button>
       </div>
     </section>`;
@@ -163,10 +224,9 @@ function userActions(user) {
   const isAdminSelf = user.uid === state.user?.uid;
   const buttons = [];
   if (user.status === "active") {
-    buttons.push(`<button class="action-button action-primary" data-action="access" data-uid="${escapeHtml(user.uid)}">Gerenciar</button>`);
-    if (!isAdminSelf) buttons.push(`<button class="action-button action-warning" data-action="status" data-status="paused" data-uid="${escapeHtml(user.uid)}">Pausar</button>`);
+    if (!isAdminSelf) buttons.push(`<button class="action-button action-warning" data-action="status" data-status="paused" data-uid="${escapeHtml(user.uid)}">Bloquear</button>`);
   } else {
-    buttons.push(`<button class="action-button action-primary" data-action="access" data-uid="${escapeHtml(user.uid)}">${user.status === "expired" ? "Renovar" : "Ativar"}</button>`);
+    buttons.push(`<button class="action-button action-primary" data-action="access" data-uid="${escapeHtml(user.uid)}">Liberar</button>`);
   }
   if (!isAdminSelf && user.status !== "cancelled") {
     buttons.push(`<button class="action-button action-danger" data-action="status" data-status="cancelled" data-uid="${escapeHtml(user.uid)}">Cancelar</button>`);
@@ -182,7 +242,6 @@ function userRow(user) {
   const photo = safePhoto(user.photoURL);
   const avatar = photo ? `<img src="${photo}" alt="" referrerpolicy="no-referrer">` : escapeHtml(initials(user));
   const status = STATUS_LABELS[user.status] || "Aguardando";
-  const expiry = user.expiresAt ? `Até ${formatDate(user.expiresAt)}` : "Vencimento não definido";
   const installments = Array.isArray(user.billing?.installments) ? user.billing.installments : [];
   const paid = installments.filter((installment) => installment.status === "paid").length;
   return `
@@ -197,7 +256,7 @@ function userRow(user) {
       </div>
       <div class="presence ${user.online ? "online" : "offline"}"><i></i><span>${escapeHtml(formatLastSeen(user))}</span></div>
       <span class="status-badge status-${escapeHtml(user.status)}">${escapeHtml(status)}</span>
-      <div class="plan-cell"><strong>${PLAN_NAME}</strong><span>${escapeHtml(expiry)} • ${paid}/12 pagas</span></div>
+      <div class="plan-cell"><strong>${PLAN_NAME}</strong><span>Acesso manual • ${paid}/12 pagas</span></div>
       <div class="user-actions">${userActions(user)}</div>
     </article>`;
 }
@@ -210,7 +269,7 @@ function renderDashboard() {
   const adminPhoto = safePhoto(state.user?.photoURL);
   const filters = [
     ["all", "Todos"], ["active", "Ativos"], ["pending", "Aguardando"],
-    ["paused", "Pausados"], ["expired", "Vencidos"], ["cancelled", "Cancelados"],
+    ["paused", "Bloqueados"], ["cancelled", "Cancelados"],
   ];
 
   root.innerHTML = `
@@ -240,7 +299,7 @@ function renderDashboard() {
         <div class="metric"><span>Usuários</span><strong>${state.users.length}</strong><small>Total cadastrado</small></div>
         <div class="metric online"><span>Online</span><strong>${online}</strong><small>Atividade recente no app</small></div>
         <div class="metric"><span>Acessos ativos</span><strong>${active}</strong><small>${PLAN_NAME}</small></div>
-        <div class="metric"><span>Bloqueados</span><strong>${blocked}</strong><small>Aguardando, pausados ou vencidos</small></div>
+        <div class="metric"><span>Bloqueados</span><strong>${blocked}</strong><small>Aguardando, bloqueados ou cancelados</small></div>
       </section>
 
       <section class="toolbar">
@@ -282,17 +341,12 @@ function modalShell(content) {
 function openAccessModal(user) {
   modalShell(`
     <form data-form="access" data-uid="${escapeHtml(user.uid)}">
-      <div class="modal-head"><div><p class="eyebrow">LIBERAR ACESSO</p><h2>${user.status === "active" ? "Gerenciar assinatura" : "Ativar usuário"}</h2></div><button type="button" class="icon-button" data-action="close-modal" aria-label="Fechar">${icon("close")}</button></div>
+      <div class="modal-head"><div><p class="eyebrow">LIBERAR ACESSO</p><h2>Liberar usuário</h2></div><button type="button" class="icon-button" data-action="close-modal" aria-label="Fechar">${icon("close")}</button></div>
       <div class="modal-user"><strong>${escapeHtml(user.displayName || "Usuário sem nome")}</strong><span>${escapeHtml(user.email || "")}</span></div>
       <div class="plan-display"><span>PLANO ÚNICO<strong>${PLAN_NAME}</strong></span><b>PRO</b></div>
-      <label class="field"><span>Data de vencimento</span><input name="expiresAt" type="date" value="${inputDate(user.expiresAt)}" required></label>
-      <div class="duration-options">
-        <button type="button" class="duration-button" data-duration="30">+ 30 dias</button>
-        <button type="button" class="duration-button" data-duration="90">+ 90 dias</button>
-        <button type="button" class="duration-button" data-duration="365">+ 1 ano</button>
-      </div>
+      <p class="modal-copy">O acesso ficará liberado até você usar o botão <strong>Bloquear</strong>. Não existe vencimento automático.</p>
       <label class="field"><span>Observação interna</span><textarea name="note" maxlength="240" placeholder="Ex.: pagamento confirmado">${escapeHtml(user.note || "")}</textarea></label>
-      <div class="modal-actions"><button type="button" data-action="close-modal">Voltar</button><button class="confirm" type="submit">${user.status === "active" ? "Salvar alterações" : "Ativar acesso"}</button></div>
+      <div class="modal-actions"><button type="button" data-action="close-modal">Voltar</button><button class="confirm" type="submit">Liberar acesso</button></div>
     </form>`);
 }
 
@@ -300,22 +354,22 @@ function openStatusModal(user, status) {
   const pausing = status === "paused";
   modalShell(`
     <form data-form="status" data-uid="${escapeHtml(user.uid)}" data-status="${status}">
-      <div class="modal-head"><div><p class="eyebrow">ALTERAR ACESSO</p><h2>${pausing ? "Pausar usuário" : "Cancelar acesso"}</h2></div><button type="button" class="icon-button" data-action="close-modal" aria-label="Fechar">${icon("close")}</button></div>
+      <div class="modal-head"><div><p class="eyebrow">ALTERAR ACESSO</p><h2>${pausing ? "Bloquear usuário" : "Cancelar acesso"}</h2></div><button type="button" class="icon-button" data-action="close-modal" aria-label="Fechar">${icon("close")}</button></div>
       <div class="modal-user"><strong>${escapeHtml(user.displayName || "Usuário sem nome")}</strong><span>${escapeHtml(user.email || "")}</span></div>
-      <p class="modal-copy${pausing ? "" : " danger-note"}">${pausing ? "O usuário perderá o acesso agora, mas os treinos e a data de vencimento serão preservados para uma futura reativação." : "O login será desativado e as sessões serão revogadas. Os dados serão preservados até que você escolha excluí-los."}</p>
+      <p class="modal-copy${pausing ? "" : " danger-note"}">${pausing ? "O aplicativo será bloqueado assim que o usuário estiver online. Os treinos permanecerão salvos para uma futura liberação." : "O acesso ao aplicativo será cancelado. A conta Google continuará registrada no Firebase Authentication e os treinos serão preservados."}</p>
       <label class="field"><span>Observação interna</span><textarea name="note" maxlength="240">${escapeHtml(user.note || "")}</textarea></label>
-      <div class="modal-actions"><button type="button" data-action="close-modal">Voltar</button><button class="${pausing ? "confirm" : "danger"}" type="submit">${pausing ? "Confirmar pausa" : "Cancelar acesso"}</button></div>
+      <div class="modal-actions"><button type="button" data-action="close-modal">Voltar</button><button class="${pausing ? "confirm" : "danger"}" type="submit">${pausing ? "Confirmar bloqueio" : "Cancelar acesso"}</button></div>
     </form>`);
 }
 
 function openDeleteModal(user) {
   modalShell(`
     <form data-form="delete" data-uid="${escapeHtml(user.uid)}">
-      <div class="modal-head"><div><p class="eyebrow">EXCLUSÃO DEFINITIVA</p><h2>Excluir usuário</h2></div><button type="button" class="icon-button" data-action="close-modal" aria-label="Fechar">${icon("close")}</button></div>
+      <div class="modal-head"><div><p class="eyebrow">EXCLUIR DADOS</p><h2>Remover dados do usuário</h2></div><button type="button" class="icon-button" data-action="close-modal" aria-label="Fechar">${icon("close")}</button></div>
       <div class="modal-user"><strong>${escapeHtml(user.displayName || "Usuário sem nome")}</strong><span>${escapeHtml(user.email || "")}</span></div>
-      <p class="modal-copy danger-note">Esta ação exclui o login e os dados de treino armazenados no Firebase. Ela não poderá ser desfeita.</p>
+      <p class="modal-copy danger-note">Esta ação apaga os treinos armazenados no Firestore e mantém o acesso cancelado. Para apagar também a conta da lista do Authentication, use o console do Firebase.</p>
       <label class="field"><span>Digite o e-mail para confirmar</span><input name="confirmEmail" type="email" autocomplete="off" placeholder="${escapeHtml(user.email || "")}" required></label>
-      <div class="modal-actions"><button type="button" data-action="close-modal">Voltar</button><button class="danger" type="submit">Excluir definitivamente</button></div>
+      <div class="modal-actions"><button type="button" data-action="close-modal">Voltar</button><button class="danger" type="submit">Excluir dados e bloquear</button></div>
     </form>`);
 }
 
@@ -327,7 +381,7 @@ function openBillingModal(user) {
       const isPaid = installment.status === "paid";
       return `<div class="admin-installment"><span>${String(installment.number).padStart(2, "0")}</span><div><strong>Parcela ${installment.number}</strong><small>${formatDate(installment.dueAt)} • R$ 29,99</small></div><b class="${isPaid ? "paid" : "pending"}">${isPaid ? "PAGA" : "PENDENTE"}</b><button type="button" class="action-button ${isPaid ? "action-warning" : "action-primary"}" data-action="set-installment" data-uid="${escapeHtml(user.uid)}" data-installment="${installment.number}" data-status="${isPaid ? "pending" : "paid"}">${isPaid ? "Reabrir" : "Marcar paga"}</button></div>`;
     }).join("")
-    : '<div class="billing-empty"><strong>Parcelamento ainda não criado</strong><span>Ative o acesso para gerar as 12 parcelas de R$ 29,99.</span></div>';
+    : `<div class="billing-empty"><strong>Parcelamento ainda não criado</strong><span>Crie as 12 parcelas para controlá-las manualmente.</span><button type="button" class="action-button action-primary" data-action="create-billing" data-uid="${escapeHtml(user.uid)}">Criar parcelas</button></div>`;
 
   modalShell(`
     <div data-billing-modal data-uid="${escapeHtml(user.uid)}">
@@ -336,21 +390,182 @@ function openBillingModal(user) {
       <div class="plan-display"><span>PLANO ÚNICO<strong>${PLAN_NAME}</strong></span><b>${paid}/12 PAGAS</b></div>
       <div class="admin-installment-list">${list}</div>
       <p class="modal-copy">O QR Code Pix continuará em configuração até você vincular a conta de recebimento. Aqui você já pode controlar manualmente os pagamentos.</p>
-      <div class="modal-actions"><button type="button" data-action="close-modal">Fechar</button><button type="button" class="confirm" data-action="access" data-uid="${escapeHtml(user.uid)}">Gerenciar acesso</button></div>
+      <div class="modal-actions"><button type="button" data-action="close-modal">Fechar</button></div>
     </div>`);
 }
 
+function permissionError(message) {
+  const error = new Error(message);
+  error.code = "permission-denied";
+  return error;
+}
+
+async function assertAdmin() {
+  const { db, doc, getDoc } = state.firestore;
+  const snapshot = await getDoc(doc(db, "admins", state.user.uid));
+  if (!snapshot.exists() || snapshot.data()?.enabled !== true) {
+    throw permissionError("Crie no Firestore o documento admins/" + state.user.uid + " com o campo enabled = true.");
+  }
+}
+
+async function writeAudit(action, user, details = {}) {
+  const { db, collection, addDoc, serverTimestamp } = state.firestore;
+  await addDoc(collection(db, "adminAudit"), {
+    action,
+    targetUid: user.uid,
+    targetEmail: user.email || "",
+    adminUid: state.user.uid,
+    adminEmail: state.user.email || "",
+    details,
+    createdAt: serverTimestamp(),
+  });
+}
+
+async function setAccess({ user, status, note = "" }) {
+  if (!["active", "paused", "cancelled"].includes(status)) throw new Error("Situação de acesso inválida.");
+  if (user.uid === state.user.uid && status !== "active") throw new Error("A conta administradora não pode bloquear a si mesma.");
+
+  const { db, doc, getDoc, setDoc, serverTimestamp } = state.firestore;
+  const reference = doc(db, "access", user.uid);
+  const snapshot = await getDoc(reference);
+  const existing = snapshot.exists() ? snapshot.data() : {};
+  const payload = {
+    uid: user.uid,
+    email: user.email || existing.email || "",
+    displayName: user.displayName || existing.displayName || "",
+    photoURL: user.photoURL || existing.photoURL || "",
+    plan: "pro",
+    status,
+    expiresAt: null,
+    updatedAt: serverTimestamp(),
+    updatedBy: state.user.uid,
+  };
+  if (!snapshot.exists()) payload.createdAt = serverTimestamp();
+  if (status === "active") payload.activatedAt = serverTimestamp();
+  if (status === "active" && !Array.isArray(existing?.billing?.installments)) {
+    payload.billing = createBillingSchedule();
+  }
+
+  await Promise.all([
+    setDoc(reference, payload, { merge: true }),
+    setDoc(doc(db, "adminNotes", user.uid), {
+      uid: user.uid,
+      note: String(note || "").trim().slice(0, 240),
+      updatedAt: serverTimestamp(),
+      updatedBy: state.user.uid,
+    }, { merge: true }),
+  ]);
+  await writeAudit(`access.${status}`, user, { mode: "manual" });
+}
+
+async function createBilling(user) {
+  const { db, doc, setDoc, serverTimestamp } = state.firestore;
+  await setDoc(doc(db, "access", user.uid), {
+    billing: createBillingSchedule(),
+    updatedAt: serverTimestamp(),
+    updatedBy: state.user.uid,
+  }, { merge: true });
+  await writeAudit("billing.created", user, { installments: PLAN_INSTALLMENTS, amountCents: PLAN_INSTALLMENT_CENTS });
+}
+
+async function setInstallment({ user, installmentNumber, status }) {
+  if (!Number.isInteger(installmentNumber) || installmentNumber < 1 || installmentNumber > PLAN_INSTALLMENTS) throw new Error("Parcela inválida.");
+  if (!["pending", "paid"].includes(status)) throw new Error("Situação de pagamento inválida.");
+
+  const { db, doc, runTransaction, serverTimestamp, Timestamp } = state.firestore;
+  const reference = doc(db, "access", user.uid);
+  await runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(reference);
+    if (!snapshot.exists()) throw new Error("Usuário não encontrado.");
+    const access = snapshot.data();
+    const billing = access.billing && Array.isArray(access.billing.installments)
+      ? access.billing
+      : createBillingSchedule();
+    const installments = [...billing.installments];
+    const index = installments.findIndex((item, itemIndex) => Number(item?.number || itemIndex + 1) === installmentNumber);
+    if (index < 0) throw new Error("Parcela não encontrada.");
+    installments[index] = {
+      ...installments[index],
+      status,
+      paidAt: status === "paid" ? Timestamp.now() : null,
+    };
+    transaction.set(reference, {
+      billing: { ...billing, plan: "pro", planName: PLAN_NAME, installments },
+      updatedAt: serverTimestamp(),
+      updatedBy: state.user.uid,
+    }, { merge: true });
+  });
+  await writeAudit(`installment.${status}`, user, { installmentNumber, amountCents: PLAN_INSTALLMENT_CENTS });
+}
+
+async function deleteUserData(user) {
+  if (user.uid === state.user.uid) throw new Error("A conta administradora não pode excluir a si mesma.");
+  const { db, doc, collection, getDocs, writeBatch, setDoc, serverTimestamp } = state.firestore;
+  const [workouts, appDocuments] = await Promise.all([
+    getDocs(collection(db, "users", user.uid, "workouts")),
+    getDocs(collection(db, "users", user.uid, "app")),
+  ]);
+  const references = [
+    ...workouts.docs.map((item) => item.ref),
+    ...appDocuments.docs.map((item) => item.ref),
+    doc(db, "presence", user.uid),
+    doc(db, "adminNotes", user.uid),
+  ];
+  for (let offset = 0; offset < references.length; offset += 400) {
+    const batch = writeBatch(db);
+    references.slice(offset, offset + 400).forEach((reference) => batch.delete(reference));
+    await batch.commit();
+  }
+  await setDoc(doc(db, "access", user.uid), {
+    status: "cancelled",
+    expiresAt: null,
+    billing: null,
+    dataRemovedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    updatedBy: state.user.uid,
+  }, { merge: true });
+  await writeAudit("user.data_removed", user, { authenticationRecordPreserved: true });
+}
+
 async function refreshUsers({ quiet = false } = {}) {
-  if (!state.user || !state.calls) return;
+  if (!state.user || !state.firestore) return;
   if (!quiet) {
     state.refreshing = true;
     if (state.users.length) render();
   }
   try {
-    const result = await state.calls.listUsers();
-    state.users = Array.isArray(result.data?.users) ? result.data.users : [];
-    state.generatedAt = result.data?.generatedAt || Date.now();
-    state.truncated = Boolean(result.data?.truncated);
+    await assertAdmin();
+    const { db, collection, getDocs } = state.firestore;
+    const [accessSnapshot, presenceSnapshot, notesSnapshot] = await Promise.all([
+      getDocs(collection(db, "access")),
+      getDocs(collection(db, "presence")),
+      getDocs(collection(db, "adminNotes")),
+    ]);
+    const presenceByUid = new Map(presenceSnapshot.docs.map((item) => [item.id, item.data()]));
+    const notesByUid = new Map(notesSnapshot.docs.map((item) => [item.id, item.data()]));
+    const now = Date.now();
+    state.users = accessSnapshot.docs.map((item) => {
+      const access = item.data();
+      const presence = presenceByUid.get(item.id) || {};
+      const status = ["active", "paused", "cancelled", "pending"].includes(access.status) ? access.status : "active";
+      const lastSeenAt = timestampMillis(presence.lastSeen);
+      return {
+        uid: item.id,
+        displayName: String(access.displayName || presence.displayName || ""),
+        email: String(access.email || presence.email || ""),
+        photoURL: String(access.photoURL || presence.photoURL || ""),
+        createdAt: timestampMillis(access.createdAt),
+        lastSeenAt,
+        online: Boolean(presence.online && lastSeenAt && now - lastSeenAt <= ONLINE_WINDOW_MS && status === "active"),
+        status,
+        plan: "pro",
+        expiresAt: null,
+        note: String(notesByUid.get(item.id)?.note || ""),
+        billing: serializeBilling(access.billing),
+      };
+    }).sort((a, b) => Number(b.online) - Number(a.online) || Number(b.lastSeenAt || b.createdAt || 0) - Number(a.lastSeenAt || a.createdAt || 0));
+    state.generatedAt = now;
+    state.truncated = false;
     state.denied = false;
     state.error = "";
   } catch (error) {
@@ -358,7 +573,7 @@ async function refreshUsers({ quiet = false } = {}) {
     const message = friendlyError(error);
     if (String(error?.code || "").includes("permission-denied")) {
       state.denied = true;
-      state.error = message;
+      state.error = error?.message || message;
     } else if (!quiet) {
       showToast(message, true);
     }
@@ -449,18 +664,15 @@ overlay.addEventListener("click", (event) => {
     const user = findUser(actionNode.dataset.uid);
     const installmentNumber = Number(actionNode.dataset.installment);
     const nextStatus = actionNode.dataset.status;
-    if (user) runMutation(actionNode, () => state.calls.setInstallment({
-      uid: user.uid,
+    if (user) runMutation(actionNode, () => setInstallment({
+      user,
       installmentNumber,
       status: nextStatus,
     }), nextStatus === "paid" ? "Parcela marcada como paga." : "Parcela reaberta.");
   }
-  const duration = event.target.closest("[data-duration]")?.dataset.duration;
-  if (duration) {
-    const date = new Date(Date.now() + Number(duration) * 86400000);
-    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
-    const input = overlay.querySelector('input[name="expiresAt"]');
-    if (input) input.value = local.toISOString().slice(0, 10);
+  if (action === "create-billing") {
+    const user = findUser(actionNode.dataset.uid);
+    if (user) runMutation(actionNode, () => createBilling(user), "Parcelas criadas.");
   }
 });
 
@@ -473,31 +685,22 @@ overlay.addEventListener("submit", async (event) => {
 
   if (form.dataset.form === "access") {
     const data = new FormData(form);
-    const expiresAt = new Date(`${data.get("expiresAt")}T23:59:59`).getTime();
-    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-      showToast("Escolha uma data de vencimento futura.", true);
-      return;
-    }
-    await runMutation(submit, () => state.calls.setAccess({
-      uid: user.uid,
+    await runMutation(submit, () => setAccess({
+      user,
       status: "active",
-      plan: "pro",
-      expiresAt,
       note: String(data.get("note") || ""),
-    }), `Acesso de ${user.displayName || user.email} ativado.`);
+    }), `Acesso de ${user.displayName || user.email} liberado.`);
     return;
   }
 
   if (form.dataset.form === "status") {
     const data = new FormData(form);
     const nextStatus = form.dataset.status;
-    await runMutation(submit, () => state.calls.setAccess({
-      uid: user.uid,
+    await runMutation(submit, () => setAccess({
+      user,
       status: nextStatus,
-      plan: "pro",
-      expiresAt: user.expiresAt || null,
       note: String(data.get("note") || ""),
-    }), nextStatus === "paused" ? "Acesso pausado." : "Acesso cancelado.");
+    }), nextStatus === "paused" ? "Acesso bloqueado." : "Acesso cancelado.");
     return;
   }
 
@@ -507,7 +710,7 @@ overlay.addEventListener("submit", async (event) => {
       showToast("Digite exatamente o e-mail exibido para confirmar.", true);
       return;
     }
-    await runMutation(submit, () => state.calls.deleteUser({ uid: user.uid, confirmEmail }), "Usuário e dados excluídos.");
+    await runMutation(submit, () => deleteUserData(user), "Dados removidos e acesso cancelado.");
   }
 });
 
@@ -530,10 +733,10 @@ async function main() {
     return;
   }
 
-  const [{ initializeApp }, authSdk, functionsSdk, appCheckSdk] = await Promise.all([
+  const [{ initializeApp }, authSdk, firestoreSdk, appCheckSdk] = await Promise.all([
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app.js`),
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-auth.js`),
-    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-functions.js`),
+    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore.js`),
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app-check.js`),
   ]);
   const app = initializeApp(firebaseConfig);
@@ -544,18 +747,25 @@ async function main() {
     });
   }
   const auth = authSdk.getAuth(app);
-  const functions = functionsSdk.getFunctions(app, FUNCTIONS_REGION);
+  const db = firestoreSdk.getFirestore(app);
   state.auth = {
     instance: auth,
     GoogleAuthProvider: authSdk.GoogleAuthProvider,
     signInWithPopup: authSdk.signInWithPopup,
     signOut: authSdk.signOut,
   };
-  state.calls = {
-    listUsers: functionsSdk.httpsCallable(functions, "adminListUsers"),
-    setAccess: functionsSdk.httpsCallable(functions, "adminSetAccess"),
-    setInstallment: functionsSdk.httpsCallable(functions, "adminSetInstallment"),
-    deleteUser: functionsSdk.httpsCallable(functions, "adminDeleteUser"),
+  state.firestore = {
+    db,
+    doc: firestoreSdk.doc,
+    collection: firestoreSdk.collection,
+    getDoc: firestoreSdk.getDoc,
+    getDocs: firestoreSdk.getDocs,
+    setDoc: firestoreSdk.setDoc,
+    addDoc: firestoreSdk.addDoc,
+    writeBatch: firestoreSdk.writeBatch,
+    runTransaction: firestoreSdk.runTransaction,
+    serverTimestamp: firestoreSdk.serverTimestamp,
+    Timestamp: firestoreSdk.Timestamp,
   };
 
   authSdk.onAuthStateChanged(auth, async (user) => {

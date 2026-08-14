@@ -43,76 +43,65 @@ App web mobile para registrar treinos, cargas, séries, repetições, frequênci
 
 Cada exercício já possui os campos `poster` e `videoUrl` no objeto `EXERCISE_MEDIA`, em `app.js`. Para trocar a imagem estática por um vídeo sem refazer a tela, coloque o arquivo dentro do projeto e preencha apenas `videoUrl`; o player com controles aparecerá automaticamente e continuará usando a imagem como capa.
 
-## Ativar o Firebase e a central administrativa
+## Configuração gratuita do Firebase
 
-1. No Firebase Console, crie/abra o projeto e registre um **App Web**.
-2. Copie o objeto `firebaseConfig` fornecido pelo console para `firebase-config.js`.
-3. Em **Authentication > Sign-in method**, habilite **Google**.
-4. Crie o **Cloud Firestore**.
-5. Mude o projeto Firebase para o plano que permite publicar Cloud Functions.
-6. Publique as regras e as Functions protegidas que já estão no projeto.
-7. Publique o site. Se usar um domínio fora do Firebase Hosting, adicione esse domínio aos domínios autorizados do Authentication.
+Esta versão usa somente **Firebase Authentication + Cloud Firestore** e funciona no plano gratuito Spark. Não há Cloud Functions nem cobrança automática.
 
-Na primeira publicação das Functions, instale as dependências e informe o e-mail da conta que será a administradora quando o Firebase solicitar `ADMIN_EMAIL`:
+1. No Firebase Console, mantenha o projeto no plano **Spark**.
+2. Em **Authentication > Sign-in method**, habilite o Google.
+3. Em **Authentication > Settings > Authorized domains**, adicione o domínio publicado na Vercel.
+4. Em **Firestore Database**, crie o banco em modo de produção.
+5. Abra a aba **Rules**, substitua o conteúdo pelo arquivo `firestore.rules` e clique em **Publish**.
+6. Publique o site novamente na Vercel.
+
+Também é possível publicar as regras pelo terminal, sem contratar o plano pago:
 
 ```bash
 npx firebase-tools login
 npx firebase-tools use treino-346bb
-cd functions
-npm install
-cd ..
-npx firebase-tools deploy --only firestore:rules,functions
+npx firebase-tools deploy --only firestore:rules
 ```
 
-Depois, acesse `/admin/` no mesmo domínio do app e entre com exatamente esse e-mail. Todos os novos logins aparecem como **Aguardando** até que o administrador ative o acesso. A ativação cria o parcelamento mensal do plano único **Meu Treino Pro**: 12 parcelas de R$ 29,99.
+## Tornar sua conta administradora
 
-Se também usar Firebase Hosting, publique o front-end com:
+1. Entre uma vez em `/admin/` usando sua conta Google. A tela exibirá seu UID.
+2. No Firebase Console, abra **Firestore Database > Data**.
+3. Crie a coleção `admins`.
+4. Crie um documento cujo ID seja exatamente o UID mostrado na central.
+5. Adicione o campo `enabled`, tipo **boolean**, valor `true`.
+6. Reabra `/admin/`.
 
-```bash
-npx firebase-tools deploy --only hosting
-```
+O documento `admins/{uid}` não pode ser criado ou alterado pelo site. Isso evita que um usuário comum se transforme em administrador pelo navegador.
 
-Se o front-end estiver na Vercel, continue publicando pela Vercel e use o Firebase apenas para Authentication, Firestore e Functions. Nesse caso, mantenha o domínio da Vercel autorizado no Firebase Authentication.
+## Como o bloqueio manual funciona
 
-As coleções não precisam ser criadas vazias no console. Elas surgem automaticamente nestes momentos:
+- O primeiro login cria `access/{uid}` com `status: "active"`. Portanto, todos entram liberados por enquanto.
+- Quando alguém não pagar, abra `/admin/` e toque em **Bloquear**.
+- A central altera o status para `paused`; o app fecha o acesso assim que o aparelho receber a mudança.
+- Para devolver o acesso, toque em **Liberar**.
+- Não existe vencimento automático. A situação depende somente da sua ação na central.
+- Bloquear o app não apaga a conta Google da lista do Firebase Authentication.
 
-- `presence`: no primeiro login de cada conta.
-- `admins`: na primeira entrada do e-mail administrador em `/admin/`.
-- `access`: no primeiro login, já com a situação **Aguardando**; depois é atualizado pela central.
-- `users`: quando um usuário já ativo salva os próprios dados.
-- `adminNotes` e `adminAudit`: ao executar ações na central.
+Cada usuário pode ler apenas o próprio documento e só pode salvar treinos enquanto seu status estiver `active`. Somente UIDs cadastrados em `admins` podem listar pessoas ou alterar acessos.
 
-### Proteção adicional com App Check
+## Coleções criadas automaticamente
 
-O código já aceita App Check com reCAPTCHA Enterprise. Para ativá-lo com segurança:
+- `access`: cadastro e status de acesso de cada login.
+- `presence`: atividade recente para indicar online/offline.
+- `users`: perfil, rotina, configurações e treinos, sempre separados por UID.
+- `adminNotes`: observações internas feitas na central.
+- `adminAudit`: histórico das ações administrativas.
 
-1. No Google Cloud, crie uma chave reCAPTCHA Enterprise do tipo Web e cadastre todos os domínios publicados.
-2. Em **Firebase Console > App Check**, registre o App Web usando a mesma chave.
-3. Cole somente a chave pública em `appCheckSiteKey`, no arquivo `firebase-config.js`.
-4. Publique o front-end e monitore as métricas do App Check.
-5. Só depois habilite a obrigatoriedade para Firestore, Authentication e Functions, evitando bloquear usuários válidos durante a transição.
+A coleção `admins` é a única criada manualmente, uma vez, para cadastrar sua conta administrativa.
 
-O login Google usa o mesmo fluxo em computador e celular (`signInWithPopup`),
-sem redirecionamento específico para mobile. Em hospedagens externas, mantenha
-o domínio publicado na lista de domínios autorizados do Firebase Authentication.
+## Financeiro e QR Code Pix
 
-Estrutura de dados usada no Firestore:
+O controle das 12 parcelas de R$ 29,99 continua manual. A central pode criar as parcelas e marcar cada uma como paga ou pendente. Os campos `pixCode` e `qrCodeUrl` ficam vazios até você definir o recebimento; o Firebase não cobra nem confirma pagamentos sozinho.
 
-- `users/{uid}/app/settings`: perfil e treinos personalizados.
-- `users/{uid}/workouts/{treinoId}`: cada treino concluído em um documento separado.
-- `access/{uid}`: situação do acesso, vencimento e as 12 parcelas do próprio usuário.
-- `presence/{uid}`: último sinal de atividade usado para indicar online/offline na central.
-- `admins/{uid}` e `adminAudit`: permissão administrativa e registro das ações sensíveis.
-- `adminNotes/{uid}`: observações internas, invisíveis para o usuário comum.
+## Observações importantes
 
-As regras permitem que cada usuário leia somente o próprio acesso e use os dados de treino apenas quando a assinatura está ativa e dentro do vencimento. Alterações administrativas passam por Cloud Functions; o navegador nunca recebe credenciais administrativas. O app continua usando armazenamento local durante a falta de sinal e envia as alterações ao Firebase quando a conexão volta.
-
-## QR Code Pix
-
-Cada parcela já possui campos próprios para `pixCode` e `qrCodeUrl`, mas eles começam vazios de propósito. Assim, o app não mostra um QR que pareça cobrar sem existir uma transação real. Quando a conta de recebimento ou o provedor Pix for escolhido, a Function de cobrança poderá preencher esses campos e um webhook poderá confirmar a parcela automaticamente. Até lá, o administrador pode marcar uma parcela como paga ou reabri-la manualmente.
-
-Desde a versão 11, o armazenamento local também é separado por `uid`. Ao atualizar,
-a rotina e os dados locais da versão anterior são migrados apenas para a conta
-que já era dona daquele navegador. Uma conta nova recebe somente a rotina inicial
-como ponto de partida. Perfil, cargas, treinos personalizados e histórico continuam
-privados e separados por conta.
+- O login Google usa `signInWithPopup` no computador e no celular.
+- O domínio da Vercel precisa estar autorizado no Firebase Authentication.
+- Um bloqueio chega aos aparelhos quando eles estão conectados. Um aparelho totalmente offline só recebe a mudança ao voltar à internet.
+- Para apagar o registro de uma pessoa em **Authentication > Users**, faça isso manualmente no Firebase Console. A central consegue bloquear e remover os dados do Firestore, mas não apagar outra conta do Authentication sem um servidor administrativo.
+- O armazenamento local é separado por UID. Perfil, cargas, treinos personalizados e histórico permanecem privados entre contas.

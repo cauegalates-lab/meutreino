@@ -47,11 +47,10 @@ async function main() {
 
   bridge.setCloudStatus({ configured: true, authResolved: false, status: "checking", message: "Verificando sua sessão" });
 
-  const [{ initializeApp }, authSdk, firestoreSdk, functionsSdk, appCheckSdk] = await Promise.all([
+  const [{ initializeApp }, authSdk, firestoreSdk, appCheckSdk] = await Promise.all([
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app.js`),
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-auth.js`),
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore.js`),
-    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-functions.js`),
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app-check.js`),
   ]);
 
@@ -73,8 +72,6 @@ async function main() {
   }
   const auth = getAuth(firebaseApp);
   const db = getFirestore(firebaseApp);
-  const functions = functionsSdk.getFunctions(firebaseApp, "southamerica-east1");
-  const registerCurrentUser = functionsSdk.httpsCallable(functions, "registerCurrentUser");
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
 
@@ -100,6 +97,40 @@ async function main() {
   const workoutsRef = (uid) => collection(db, "users", uid, "workouts");
   const accessRef = (uid) => doc(db, "access", uid);
   const presenceRef = (uid) => doc(db, "presence", uid);
+
+  async function ensureAccessRegistration(user) {
+    const reference = accessRef(user.uid);
+    const snapshot = await getDoc(reference);
+    if (snapshot.exists()) {
+      // Contas que ficaram como "aguardando" na versão anterior também são
+      // liberadas nesta migração. Bloqueios manuais não são alterados.
+      if (snapshot.data()?.status === "pending") {
+        await setDoc(reference, {
+          email: user.email || "",
+          displayName: user.displayName || "",
+          photoURL: user.photoURL || "",
+          status: "active",
+          expiresAt: null,
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+      }
+      return;
+    }
+
+    // Novas contas entram liberadas. Depois disso, apenas a conta
+    // administradora pode alterar este documento para bloquear ou liberar.
+    await setDoc(reference, {
+      uid: user.uid,
+      email: user.email || "",
+      displayName: user.displayName || "",
+      photoURL: user.photoURL || "",
+      plan: "pro",
+      status: "active",
+      expiresAt: null,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
 
   function setStatus(status, message, extra = {}) {
     bridge.setCloudStatus({ configured: true, authResolved, status, user: userInfo(currentUser), message, ...extra });
@@ -227,10 +258,9 @@ async function main() {
     const data = snapshot.exists() ? snapshot.data() : {};
     const expiresAt = timestampMillis(data.expiresAt);
     const storedStatus = ["active", "paused", "cancelled", "pending"].includes(data.status) ? data.status : "pending";
-    const expired = storedStatus === "active" && expiresAt && expiresAt <= Date.now();
     return {
-      status: expired ? "expired" : storedStatus,
-      allowed: storedStatus === "active" && !expired,
+      status: storedStatus,
+      allowed: storedStatus === "active",
       plan: String(data.plan || ""),
       expiresAt,
       billing: normalizeBilling(data.billing),
@@ -315,7 +345,14 @@ async function main() {
         access: { status: "error", allowed: false, plan: "", expiresAt: null, billing: null },
       });
     });
-    registerCurrentUser().catch((error) => console.warn("Firebase registration:", error?.code || error));
+    ensureAccessRegistration(user).catch((error) => {
+      console.error("Firebase registration:", error);
+      if (currentUser?.uid !== user.uid) return;
+      setStatus("error", "Não foi possível cadastrar seu acesso", {
+        accessResolved: true,
+        access: { status: "error", allowed: false, plan: "", expiresAt: null, billing: null },
+      });
+    });
   }
 
   function activateSignedInUser(user) {

@@ -775,15 +775,12 @@ function renderAccessScreen() {
   const checking = !state.cloud.accessResolved || access.status === "checking";
   const content = {
     pending: ["Aguardando liberação", "Seu cadastro foi recebido. O acesso será liberado pelo administrador."],
-    paused: ["Acesso pausado", "Sua assinatura está pausada. Seus treinos permanecem salvos."],
+    paused: ["Acesso bloqueado", "O administrador bloqueou este acesso. Seus treinos permanecem salvos."],
     cancelled: ["Assinatura cancelada", "Seu acesso foi cancelado. Seus dados permanecem preservados para uma possível reativação."],
     expired: ["Assinatura vencida", "O período contratado terminou. Renove o acesso para continuar usando seus treinos."],
     error: ["Não foi possível validar o acesso", "Verifique sua conexão e tente abrir o aplicativo novamente."],
   }[access.status] || ["Acesso indisponível", "Esta conta ainda não possui acesso ao aplicativo."];
   const planLabels = { pro: "Meu Treino Pro" };
-  const expires = Number(access.expiresAt)
-    ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "long" }).format(new Date(Number(access.expiresAt)))
-    : "";
   viewRoot.innerHTML = `<div class="auth-screen access-screen">
     <section class="auth-shell" aria-live="polite">
       <div class="auth-brand-mark access-brand-mark">${icon(checking ? "clock" : "lock")}</div>
@@ -792,7 +789,7 @@ function renderAccessScreen() {
       <p class="auth-copy">${checking ? "Estamos consultando sua assinatura..." : content[1]}</p>
       ${checking
         ? `<div class="auth-loading"><span class="auth-spinner"></span><small>Consultando acesso</small></div>`
-        : `<div class="access-account"><strong>${escapeHtml(state.cloud.user?.displayName || "Sua conta")}</strong><span>${escapeHtml(state.cloud.user?.email || "")}</span>${access.plan ? `<small>${escapeHtml(planLabels[access.plan] || access.plan)}${expires ? ` • até ${escapeHtml(expires)}` : ""}</small>` : ""}</div><button class="google-login-button access-logout" data-action="cloud-logout">${icon("log-out")}<span>Entrar com outra conta</span></button>`}
+        : `<div class="access-account"><strong>${escapeHtml(state.cloud.user?.displayName || "Sua conta")}</strong><span>${escapeHtml(state.cloud.user?.email || "")}</span>${access.plan ? `<small>${escapeHtml(planLabels[access.plan] || access.plan)}</small>` : ""}</div><button class="google-login-button access-logout" data-action="cloud-logout">${icon("log-out")}<span>Entrar com outra conta</span></button>`}
       <p class="auth-footnote">Seus dados continuam privados e vinculados à sua conta.</p>
     </section>
   </div>`;

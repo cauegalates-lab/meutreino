@@ -11,14 +11,53 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return signedIn() && request.auth.token.admin == true;
+      return signedIn()
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.enabled == true;
     }
 
     function hasActiveAccess(userId) {
       return exists(/databases/$(database)/documents/access/$(userId))
-        && get(/databases/$(database)/documents/access/$(userId)).data.status == 'active'
-        && (!(get(/databases/$(database)/documents/access/$(userId)).data.expiresAt is timestamp)
-          || get(/databases/$(database)/documents/access/$(userId)).data.expiresAt > request.time);
+        && get(/databases/$(database)/documents/access/$(userId)).data.status == 'active';
+    }
+
+    function validInitialAccess(userId) {
+      return isSelf(userId)
+        && request.resource.data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'photoURL', 'plan', 'status',
+          'expiresAt', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.uid == userId
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.email is string
+        && request.resource.data.email.size() <= 320
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() <= 100
+        && request.resource.data.photoURL is string
+        && request.resource.data.photoURL.size() <= 2048
+        && request.resource.data.plan == 'pro'
+        && request.resource.data.status == 'active'
+        && request.resource.data.expiresAt == null
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+    }
+
+    function validPendingActivation(userId) {
+      return isSelf(userId)
+        && resource.data.status == 'pending'
+        && request.resource.data.status == 'active'
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.email is string
+        && request.resource.data.email.size() <= 320
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() <= 100
+        && request.resource.data.photoURL is string
+        && request.resource.data.photoURL.size() <= 2048
+        && request.resource.data.expiresAt == null
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'email', 'displayName', 'photoURL', 'status', 'expiresAt', 'updatedAt'
+        ]);
     }
 
     function validPresence(userId) {
@@ -39,7 +78,9 @@ service cloud.firestore {
 
     match /access/{userId} {
       allow read: if isAdmin() || isSelf(userId);
-      allow write: if false;
+      allow create: if isAdmin() || validInitialAccess(userId);
+      allow update: if isAdmin() || validPendingActivation(userId);
+      allow delete: if isAdmin();
     }
 
     match /presence/{userId} {
@@ -50,7 +91,7 @@ service cloud.firestore {
       allow update: if isSelf(userId)
         && validPresence(userId)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['online', 'lastSeen', 'displayName', 'email', 'photoURL']);
-      allow delete: if isSelf(userId);
+      allow delete: if isAdmin() || isSelf(userId);
     }
 
     match /admins/{adminId} {
@@ -59,13 +100,12 @@ service cloud.firestore {
     }
 
     match /adminAudit/{document=**} {
-      allow read: if isAdmin();
-      allow write: if false;
+      allow read, create: if isAdmin();
+      allow update, delete: if false;
     }
 
     match /adminNotes/{userId} {
-      allow read: if isAdmin();
-      allow write: if false;
+      allow read, write: if isAdmin();
     }
   }
 }
