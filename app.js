@@ -5,6 +5,9 @@ const SYNC_META_KEY = "meu-treino-sync-meta-v1";
 const LOCAL_OWNER_KEY = "meu-treino-owner-v1";
 const INSTALL_ONBOARDING_KEY = "meu-treino-install-onboarding-v1";
 const DATA_SCHEMA_VERSION = 2;
+const PLAN_NAME = "Meu Treino Pro";
+const PLAN_INSTALLMENTS = 12;
+const PLAN_INSTALLMENT_CENTS = 2999;
 const WEEK_DAYS = ["SEG", "TER", "QUA", "QUI", "SEX", "SÁB", "DOM"];
 const DEFAULT_TRAINING_DAYS = ["SEG", "TER", "QUA", "QUI", "SEX", "SÁB"];
 const USER_AGENT = navigator.userAgent || "";
@@ -131,7 +134,15 @@ const state = {
   timerId: null,
   restId: null,
   restSeconds: 0,
-  cloud: { configured: true, authResolved: false, status: "checking", user: null, message: "Verificando sua sessão" },
+  cloud: {
+    configured: true,
+    authResolved: false,
+    accessResolved: false,
+    status: "checking",
+    user: null,
+    access: { status: "checking", allowed: false, plan: "", expiresAt: null, billing: null },
+    message: "Verificando sua sessão",
+  },
 };
 
 const viewRoot = document.getElementById("view");
@@ -211,7 +222,7 @@ function renderInstallScreen() {
       </div>
       <button class="install-primary" data-action="install-app" ${preparingInstaller ? "disabled" : ""}>${preparingInstaller ? '<span class="install-button-spinner" aria-hidden="true"></span>' : icon("download")}<span>${preparingInstaller ? "Preparando instalação..." : "Instalar no celular"}</span>${icon("chevron")}</button>
       <button class="install-skip" data-action="continue-browser">Continuar pelo navegador</button>
-      <small>Gratuito e sem precisar da App Store ou Play Store.</small>
+      <small>Sem precisar da App Store ou Play Store.</small>
     </section>
   </div>`;
 }
@@ -500,16 +511,29 @@ function authGateActive() {
   return state.cloud.configured && (!state.cloud.authResolved || !state.cloud.user);
 }
 
+function accessGateActive() {
+  return state.cloud.configured
+    && state.cloud.authResolved
+    && Boolean(state.cloud.user)
+    && (!state.cloud.accessResolved || !state.cloud.access?.allowed);
+}
+
 function setCloudStatus(next = {}) {
   const previousConfigured = state.cloud.configured;
   const previousResolved = state.cloud.authResolved;
   const previousUserId = state.cloud.user?.uid || null;
+  const previousAccess = `${state.cloud.accessResolved}:${state.cloud.access?.status}:${state.cloud.access?.allowed}:${state.cloud.access?.expiresAt || ""}`;
   state.cloud = { ...state.cloud, ...next };
   const nextUserId = state.cloud.user?.uid || null;
-  const authChanged = previousConfigured !== state.cloud.configured || previousResolved !== state.cloud.authResolved || previousUserId !== nextUserId;
-  if (authChanged) { render(); return; }
+  const nextAccess = `${state.cloud.accessResolved}:${state.cloud.access?.status}:${state.cloud.access?.allowed}:${state.cloud.access?.expiresAt || ""}`;
+  const gateChanged = previousConfigured !== state.cloud.configured
+    || previousResolved !== state.cloud.authResolved
+    || previousUserId !== nextUserId
+    || previousAccess !== nextAccess;
+  if (gateChanged) { render(); return; }
   if (installOnboardingActive()) { renderInstallScreen(); return; }
   if (authGateActive()) { renderAuthScreen(); return; }
+  if (accessGateActive()) { renderAccessScreen(); return; }
   if (!state.active && state.view === "perfil" && !overlayRoot.innerHTML) renderProfile();
 }
 
@@ -526,6 +550,54 @@ function formatNumber(value) {
 
 function formatWeight(value) {
   return new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 1 }).format(Number(value) || 0);
+}
+
+function formatCurrency(cents = 0) {
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format((Number(cents) || 0) / 100);
+}
+
+function defaultBilling() {
+  return {
+    plan: "pro",
+    planName: PLAN_NAME,
+    amountCents: PLAN_INSTALLMENT_CENTS,
+    totalInstallments: PLAN_INSTALLMENTS,
+    startedAt: null,
+    installments: Array.from({ length: PLAN_INSTALLMENTS }, (_, index) => ({
+      number: index + 1,
+      amountCents: PLAN_INSTALLMENT_CENTS,
+      dueAt: null,
+      status: "pending",
+      paidAt: null,
+      pixCode: "",
+      qrCodeUrl: "",
+    })),
+  };
+}
+
+function currentBilling() {
+  const fallback = defaultBilling();
+  const billing = state.cloud.access?.billing;
+  if (!billing || !Array.isArray(billing.installments) || !billing.installments.length) return fallback;
+  return {
+    ...fallback,
+    ...billing,
+    planName: PLAN_NAME,
+    installments: fallback.installments.map((base, index) => ({ ...base, ...(billing.installments[index] || {}) })),
+  };
+}
+
+function paymentState(installment) {
+  if (installment.status === "paid") return "paid";
+  if (installment.dueAt && Number(installment.dueAt) < Date.now()) return "overdue";
+  return "pending";
+}
+
+function formatPaymentDate(value) {
+  if (!value) return "A definir";
+  const date = new Date(Number(value));
+  if (Number.isNaN(date.getTime())) return "A definir";
+  return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short", year: "numeric" }).format(date);
 }
 
 function formatDuration(seconds) {
@@ -696,9 +768,40 @@ function renderAuthScreen() {
   </div>`;
 }
 
+function renderAccessScreen() {
+  navRoot.innerHTML = "";
+  navRoot.style.display = "none";
+  const access = state.cloud.access || {};
+  const checking = !state.cloud.accessResolved || access.status === "checking";
+  const content = {
+    pending: ["Aguardando liberação", "Seu cadastro foi recebido. O acesso será liberado pelo administrador."],
+    paused: ["Acesso pausado", "Sua assinatura está pausada. Seus treinos permanecem salvos."],
+    cancelled: ["Assinatura cancelada", "Seu acesso foi cancelado. Seus dados permanecem preservados para uma possível reativação."],
+    expired: ["Assinatura vencida", "O período contratado terminou. Renove o acesso para continuar usando seus treinos."],
+    error: ["Não foi possível validar o acesso", "Verifique sua conexão e tente abrir o aplicativo novamente."],
+  }[access.status] || ["Acesso indisponível", "Esta conta ainda não possui acesso ao aplicativo."];
+  const planLabels = { pro: "Meu Treino Pro" };
+  const expires = Number(access.expiresAt)
+    ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "long" }).format(new Date(Number(access.expiresAt)))
+    : "";
+  viewRoot.innerHTML = `<div class="auth-screen access-screen">
+    <section class="auth-shell" aria-live="polite">
+      <div class="auth-brand-mark access-brand-mark">${icon(checking ? "clock" : "lock")}</div>
+      <p class="auth-kicker">MEU TREINO</p>
+      <h1>${checking ? "Validando seu acesso" : content[0]}</h1>
+      <p class="auth-copy">${checking ? "Estamos consultando sua assinatura..." : content[1]}</p>
+      ${checking
+        ? `<div class="auth-loading"><span class="auth-spinner"></span><small>Consultando acesso</small></div>`
+        : `<div class="access-account"><strong>${escapeHtml(state.cloud.user?.displayName || "Sua conta")}</strong><span>${escapeHtml(state.cloud.user?.email || "")}</span>${access.plan ? `<small>${escapeHtml(planLabels[access.plan] || access.plan)}${expires ? ` • até ${escapeHtml(expires)}` : ""}</small>` : ""}</div><button class="google-login-button access-logout" data-action="cloud-logout">${icon("log-out")}<span>Entrar com outra conta</span></button>`}
+      <p class="auth-footnote">Seus dados continuam privados e vinculados à sua conta.</p>
+    </section>
+  </div>`;
+}
+
 function render() {
   if (installOnboardingActive()) { renderInstallScreen(); return; }
   if (authGateActive()) { renderAuthScreen(); return; }
+  if (accessGateActive()) { renderAccessScreen(); return; }
   renderNav();
   if (state.active) renderActiveWorkout();
   else if (state.view === "home") renderHome();
@@ -875,6 +978,8 @@ function renderProfile() {
   const levelProgress = Math.round(((state.history.length % workoutsPerLevel) / workoutsPerLevel) * 100);
   const remaining = workoutsPerLevel - (state.history.length % workoutsPerLevel);
   const levelTitle = state.history.length === 0 ? "Começando agora" : state.history.length < 5 ? "Construindo constância" : state.history.length < 20 ? "Atleta consistente" : "Ritmo avançado";
+  const billing = currentBilling();
+  const paidInstallments = billing.installments.filter((installment) => installment.status === "paid").length;
   viewRoot.innerHTML = `<div class="screen-page profile-page">
     <header class="profile-hero"><input class="profile-photo-input" id="profile-photo-input" type="file" accept="image/*" aria-label="Escolher foto de perfil"><button class="profile-avatar" data-action="change-avatar" aria-label="Alterar foto de perfil">${profileAvatarContent()}<span class="profile-avatar-edit">${icon("camera")}</span></button><p class="eyebrow">SEU PERFIL</p><h1>${escapeHtml(profileDisplayName())}</h1><p>Constância vence motivação.</p></header>
     <section class="profile-stats"><article><strong>${state.history.length}</strong><span>Treinos</span></article><article><strong>${streak}</strong><span>Sequência</span></article><article><strong>${records}</strong><span>Recordes</span></article></section>
@@ -883,11 +988,73 @@ function renderProfile() {
       <button data-action="edit-profile">${`<span class="profile-option-icon">${icon("activity")}</span>`}<span><strong>Dados físicos</strong><small>${escapeHtml(physicalLabel)}</small></span>${icon("chevron")}</button>
       <button data-action="edit-training-days">${`<span class="profile-option-icon">${icon("calendar")}</span>`}<span><strong>Dias de treino</strong><small>${escapeHtml(trainingDaysLabel)}</small></span>${icon("chevron")}</button>
       <button data-action="edit-settings">${`<span class="profile-option-icon">${icon("settings")}</span>`}<span><strong>Configurações</strong><small>${escapeHtml(settingsLabel)}</small></span>${icon("chevron")}</button>
+      <button data-action="open-financial"><span class="profile-option-icon">${icon("wallet")}</span><span><strong>Financeiro</strong><small>${paidInstallments} de ${PLAN_INSTALLMENTS} parcelas pagas • ${formatCurrency(PLAN_INSTALLMENT_CENTS)}</small></span>${icon("chevron")}</button>
       ${canOfferInstall ? `<button data-action="install-app"><span class="profile-option-icon">${icon("download")}</span><span><strong>Instalar aplicativo</strong><small>Adicionar à tela inicial</small></span>${icon("chevron")}</button>` : ""}
       <button data-action="cloud-logout">${`<span class="profile-option-icon">${icon("user")}</span>`}<span><strong>Conta Google</strong><small>${escapeHtml(accountLabel)}</small></span>${icon("log-out")}</button>
     </section>
     <section class="level-card"><div><span>NÍVEL ${level}</span><h2>${escapeHtml(levelTitle)}</h2><p>${state.history.length ? `Mais ${remaining} ${remaining === 1 ? "treino" : "treinos"} para o próximo nível.` : "Conclua seu primeiro treino para evoluir."}</p></div><div class="level-ring">${levelProgress}%</div></section>
   </div>`;
+}
+
+function safePaymentImage(value) {
+  const source = String(value || "").trim();
+  if (/^data:image\/(png|jpeg|webp);base64,/i.test(source)) return source;
+  try {
+    const url = new URL(source);
+    return url.protocol === "https:" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function showFinancialArea() {
+  const billing = currentBilling();
+  const paid = billing.installments.filter((installment) => installment.status === "paid").length;
+  const percentage = Math.round((paid / PLAN_INSTALLMENTS) * 100);
+  const total = formatCurrency(PLAN_INSTALLMENTS * PLAN_INSTALLMENT_CENTS);
+  const rows = billing.installments.map((installment) => {
+    const status = paymentState(installment);
+    const labels = { paid: "Paga", pending: "Aguardando", overdue: "Vencida" };
+    return `<button class="financial-installment" data-action="open-installment" data-installment="${installment.number}">
+      <span class="installment-number">${String(installment.number).padStart(2, "0")}</span>
+      <span class="installment-copy"><strong>Parcela ${installment.number} de ${PLAN_INSTALLMENTS}</strong><small>Vencimento: ${escapeHtml(formatPaymentDate(installment.dueAt))}</small></span>
+      <span class="installment-value"><strong>${formatCurrency(installment.amountCents)}</strong><small class="payment-${status}">${labels[status]}</small></span>
+      ${icon("chevron")}
+    </button>`;
+  }).join("");
+
+  overlayRoot.innerHTML = `<div class="modal-backdrop builder-backdrop financial-backdrop"><section class="builder-modal financial-modal" role="dialog" aria-modal="true" aria-label="Financeiro"><button class="modal-close" data-action="close-modal" aria-label="Fechar">×</button><p class="eyebrow">SUA ASSINATURA</p><h2>Financeiro</h2><p>Acompanhe as parcelas do seu acesso ao ${PLAN_NAME}.</p>
+    <section class="subscription-card">
+      <div><span>PLANO ÚNICO</span><h3>${PLAN_NAME}</h3><p>12 parcelas de ${formatCurrency(PLAN_INSTALLMENT_CENTS)} • Total ${total}</p></div>
+      <strong>${paid}/${PLAN_INSTALLMENTS}</strong>
+      <div class="subscription-progress"><i style="width:${percentage}%"></i></div>
+    </section>
+    <div class="financial-heading"><strong>Parcelas</strong><span>${paid} ${paid === 1 ? "paga" : "pagas"}</span></div>
+    <div class="financial-list">${rows}</div>
+    <div class="settings-note">${icon("lock")} Os códigos de pagamento só aparecem quando estiverem vinculados à sua conta.</div>
+  </section></div>`;
+}
+
+function showInstallmentPayment(number) {
+  const installment = currentBilling().installments.find((item) => Number(item.number) === Number(number));
+  if (!installment) return;
+  const status = paymentState(installment);
+  const qrCodeUrl = safePaymentImage(installment.qrCodeUrl);
+  const pixCode = String(installment.pixCode || "");
+  const isReady = Boolean(qrCodeUrl || pixCode);
+  const paid = status === "paid";
+  const qrContent = paid
+    ? `<div class="payment-success">${icon("check")}<strong>Pagamento confirmado</strong><span>Pago em ${escapeHtml(formatPaymentDate(installment.paidAt))}</span></div>`
+    : qrCodeUrl
+      ? `<div class="payment-qr"><img src="${escapeHtml(qrCodeUrl)}" alt="QR Code Pix da parcela ${installment.number}"></div>`
+      : `<div class="payment-qr payment-qr-empty">${icon("qr")}<strong>QR Code em configuração</strong><span>Ele aparecerá aqui quando a conta de recebimento for vinculada.</span></div>`;
+
+  overlayRoot.innerHTML = `<div class="modal-backdrop builder-backdrop financial-backdrop"><section class="builder-modal installment-modal" role="dialog" aria-modal="true" aria-label="Pagamento da parcela ${installment.number}"><button class="modal-close" data-action="financial-back" aria-label="Voltar">×</button><p class="eyebrow">${paid ? "PAGAMENTO" : "PAGAR COM PIX"}</p><h2>Parcela ${installment.number} de ${PLAN_INSTALLMENTS}</h2><p>Vencimento em ${escapeHtml(formatPaymentDate(installment.dueAt))} • ${formatCurrency(installment.amountCents)}</p>
+    ${qrContent}
+    ${!paid && pixCode ? `<label class="pix-code"><span>PIX COPIA E COLA</span><textarea readonly>${escapeHtml(pixCode)}</textarea></label><button class="primary-button copy-pix-button" data-action="copy-pix" data-installment="${installment.number}"><span class="button-label">Copiar código Pix</span><span class="button-icon">${icon("copy")}</span></button>` : ""}
+    ${!paid && !isReady ? `<div class="settings-note">${icon("lock")} Nenhuma cobrança será feita até o QR Code real ser configurado.</div>` : ""}
+    <button class="financial-back-button" data-action="financial-back">Voltar para as parcelas</button>
+  </section></div>`;
 }
 
 function renderActiveWorkout() {
@@ -913,13 +1080,13 @@ function renderActiveWorkout() {
 }
 
 function exerciseMediaPanel(exercise, exerciseIndex, exerciseCount) {
-  const poster = exercise.image
-    ? `<img src="${escapeHtml(exercise.image)}" alt="Demonstração de ${escapeHtml(exercise.name)}">`
-    : `<span class="exercise-media-fallback">${icon("dumbbell")}</span>`;
   if (exercise.videoUrl) {
     return `<section class="exercise-media" id="exercise-media"><video controls playsinline preload="metadata" poster="${escapeHtml(exercise.image || "")}" aria-label="Vídeo demonstrativo de ${escapeHtml(exercise.name)}"><source src="${escapeHtml(exercise.videoUrl)}"></video><div class="exercise-media-heading"><small>EXERCÍCIO ${exerciseIndex + 1} DE ${exerciseCount}</small><strong>${escapeHtml(exercise.name)}</strong></div></section>`;
   }
-  return `<section class="exercise-media" id="exercise-media"><button type="button" class="exercise-media-placeholder" data-action="media-placeholder" aria-label="Demonstração de ${escapeHtml(exercise.name)} em breve">${poster}<span class="exercise-media-shade"></span><span class="exercise-media-heading"><small>EXERCÍCIO ${exerciseIndex + 1} DE ${exerciseCount}</small><strong>${escapeHtml(exercise.name)}</strong></span><span class="exercise-media-play">${icon("play")}</span><span class="exercise-media-status">Imagem demonstrativa</span></button></section>`;
+  const media = exercise.image
+    ? `<img src="${escapeHtml(exercise.image)}" alt="Demonstração de ${escapeHtml(exercise.name)}">`
+    : `<span class="exercise-media-fallback" aria-label="Imagem de ${escapeHtml(exercise.name)} indisponível">${icon("dumbbell")}</span>`;
+  return `<section class="exercise-media" id="exercise-media">${media}</section>`;
 }
 
 function exerciseCard(exercise, exerciseIndex) {
@@ -1128,8 +1295,23 @@ document.addEventListener("click", async (event) => {
   if (action === "edit-profile") showProfileEditor();
   if (action === "edit-training-days") showTrainingDaysEditor();
   if (action === "edit-settings") showSettingsEditor();
+  if (action === "open-financial") showFinancialArea();
+  if (action === "open-installment") showInstallmentPayment(Number(button.dataset.installment));
+  if (action === "financial-back") showFinancialArea();
+  if (action === "copy-pix") {
+    const installment = currentBilling().installments.find((item) => Number(item.number) === Number(button.dataset.installment));
+    const pixCode = String(installment?.pixCode || "");
+    if (!pixCode) { showToast("O código Pix ainda não foi configurado."); return; }
+    try {
+      await navigator.clipboard.writeText(pixCode);
+      showToast("Código Pix copiado.");
+    } catch {
+      const field = overlayRoot.querySelector(".pix-code textarea");
+      field?.select();
+      showToast("Selecione e copie o código Pix.");
+    }
+  }
   if (action === "back-workout") { stopTimers(); state.active = null; state.restSeconds = 0; render(); window.scrollTo({top:0}); }
-  if (action === "media-placeholder") showToast("O vídeo deste exercício será adicionado em breve.");
   if (action === "select-active-exercise" && state.active) {
     const nextIndex = Number(button.dataset.exercise);
     if (Number.isInteger(nextIndex) && state.active.exercises[nextIndex]) {

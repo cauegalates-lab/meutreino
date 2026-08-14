@@ -5,6 +5,7 @@
       "firebase.json",
       "firestore.rules",
       "README.md",
+      "functions/**",
       "**/.*",
       "**/node_modules/**"
     ],
@@ -21,5 +22,9 @@
   },
   "firestore": {
     "rules": "firestore.rules"
-  }
+  },
+  "functions": [{
+    "source": "functions",
+    "codebase": "default"
+  }]
 }

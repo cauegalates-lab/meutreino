@@ -1,4 +1,4 @@
-import { firebaseConfig } from "./firebase-config.js";
+import { appCheckSiteKey, firebaseConfig } from "./firebase-config.js";
 
 const FIREBASE_VERSION = "12.16.0";
 
@@ -47,10 +47,12 @@ async function main() {
 
   bridge.setCloudStatus({ configured: true, authResolved: false, status: "checking", message: "Verificando sua sessão" });
 
-  const [{ initializeApp }, authSdk, firestoreSdk] = await Promise.all([
+  const [{ initializeApp }, authSdk, firestoreSdk, functionsSdk, appCheckSdk] = await Promise.all([
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app.js`),
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-auth.js`),
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore.js`),
+    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-functions.js`),
+    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app-check.js`),
   ]);
 
   const {
@@ -60,11 +62,19 @@ async function main() {
     signInWithPopup,
     signOut: firebaseSignOut,
   } = authSdk;
-  const { getFirestore, doc, collection, getDoc, getDocs, setDoc, writeBatch, serverTimestamp } = firestoreSdk;
+  const { getFirestore, doc, collection, getDoc, getDocs, setDoc, writeBatch, serverTimestamp, onSnapshot } = firestoreSdk;
 
   const firebaseApp = initializeApp(firebaseConfig);
+  if (String(appCheckSiteKey || "").trim()) {
+    appCheckSdk.initializeAppCheck(firebaseApp, {
+      provider: new appCheckSdk.ReCaptchaEnterpriseProvider(String(appCheckSiteKey).trim()),
+      isTokenAutoRefreshEnabled: true,
+    });
+  }
   const auth = getAuth(firebaseApp);
   const db = getFirestore(firebaseApp);
+  const functions = functionsSdk.getFunctions(firebaseApp, "southamerica-east1");
+  const registerCurrentUser = functionsSdk.httpsCallable(functions, "registerCurrentUser");
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
 
@@ -75,6 +85,9 @@ async function main() {
   let knownRemoteWorkoutIds = new Set();
   let queue = Promise.resolve();
   let syncTimer = null;
+  let unsubscribeAccess = null;
+  let presenceTimer = null;
+  let accessAllowed = false;
 
   const userInfo = (user) => user ? {
     uid: user.uid,
@@ -85,9 +98,11 @@ async function main() {
 
   const settingsRef = (uid) => doc(db, "users", uid, "app", "settings");
   const workoutsRef = (uid) => collection(db, "users", uid, "workouts");
+  const accessRef = (uid) => doc(db, "access", uid);
+  const presenceRef = (uid) => doc(db, "presence", uid);
 
-  function setStatus(status, message) {
-    bridge.setCloudStatus({ configured: true, authResolved, status, user: userInfo(currentUser), message });
+  function setStatus(status, message, extra = {}) {
+    bridge.setCloudStatus({ configured: true, authResolved, status, user: userInfo(currentUser), message, ...extra });
   }
 
   function reportError(error, message = "Não foi possível salvar na nuvem agora.") {
@@ -128,7 +143,7 @@ async function main() {
   }
 
   async function pushLocalState(expectedUid = currentUser?.uid) {
-    if (!expectedUid || currentUser?.uid !== expectedUid) return;
+    if (!expectedUid || currentUser?.uid !== expectedUid || !accessAllowed) return;
     if (!navigator.onLine) {
       setStatus("offline", "Offline • alterações seguras neste aparelho");
       return;
@@ -149,7 +164,7 @@ async function main() {
   }
 
   async function hydrateFromCloud(expectedUid = currentUser?.uid) {
-    if (!expectedUid || currentUser?.uid !== expectedUid) return;
+    if (!expectedUid || currentUser?.uid !== expectedUid || !accessAllowed) return;
     if (!navigator.onLine) {
       setStatus("offline", "Offline • usando dados deste aparelho");
       return;
@@ -181,28 +196,146 @@ async function main() {
     await pushLocalState(expectedUid);
   }
 
+  function timestampMillis(value) {
+    if (!value) return null;
+    if (typeof value.toMillis === "function") return value.toMillis();
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+  }
+
+  function normalizeBilling(value) {
+    if (!value || !Array.isArray(value.installments)) return null;
+    return {
+      plan: "pro",
+      planName: "Meu Treino Pro",
+      amountCents: 2999,
+      totalInstallments: 12,
+      startedAt: timestampMillis(value.startedAt),
+      installments: value.installments.slice(0, 12).map((installment, index) => ({
+        number: Number(installment?.number) || index + 1,
+        amountCents: Number(installment?.amountCents) || 2999,
+        dueAt: timestampMillis(installment?.dueAt),
+        status: installment?.status === "paid" ? "paid" : "pending",
+        paidAt: timestampMillis(installment?.paidAt),
+        pixCode: String(installment?.pixCode || ""),
+        qrCodeUrl: String(installment?.qrCodeUrl || ""),
+      })),
+    };
+  }
+
+  function normalizeAccess(snapshot) {
+    const data = snapshot.exists() ? snapshot.data() : {};
+    const expiresAt = timestampMillis(data.expiresAt);
+    const storedStatus = ["active", "paused", "cancelled", "pending"].includes(data.status) ? data.status : "pending";
+    const expired = storedStatus === "active" && expiresAt && expiresAt <= Date.now();
+    return {
+      status: expired ? "expired" : storedStatus,
+      allowed: storedStatus === "active" && !expired,
+      plan: String(data.plan || ""),
+      expiresAt,
+      billing: normalizeBilling(data.billing),
+    };
+  }
+
+  async function updatePresence(online, uid = currentUser?.uid) {
+    if (!uid || currentUser?.uid !== uid) return;
+    try {
+      await setDoc(presenceRef(uid), {
+        uid,
+        online: Boolean(online),
+        lastSeen: serverTimestamp(),
+        displayName: currentUser.displayName || "",
+        email: currentUser.email || "",
+        photoURL: currentUser.photoURL || "",
+      }, { merge: true });
+    } catch (error) {
+      console.warn("Firebase presence:", error?.code || error);
+    }
+  }
+
+  function stopPresence(markOffline = false) {
+    const uid = currentUser?.uid;
+    if (presenceTimer) clearInterval(presenceTimer);
+    presenceTimer = null;
+    if (markOffline && uid) updatePresence(false, uid);
+  }
+
+  function startPresence(uid) {
+    stopPresence(false);
+    const publish = () => updatePresence(document.visibilityState === "visible" && navigator.onLine, uid);
+    publish();
+    presenceTimer = window.setInterval(publish, 60000);
+  }
+
+  function stopAccessObserver() {
+    if (typeof unsubscribeAccess === "function") unsubscribeAccess();
+    unsubscribeAccess = null;
+  }
+
+  function beginHydration(uid) {
+    if (hydrated || hydrationUserId === uid || !accessAllowed) return;
+    hydrationUserId = uid;
+    enqueue(async () => {
+      try {
+        await hydrateFromCloud(uid);
+      } finally {
+        if (hydrationUserId === uid) hydrationUserId = null;
+      }
+    });
+  }
+
+  function observeAccess(user) {
+    stopAccessObserver();
+    accessAllowed = false;
+    setStatus("checking", "Validando seu acesso", {
+      accessResolved: false,
+      access: { status: "checking", allowed: false, plan: "", expiresAt: null, billing: null },
+    });
+
+    unsubscribeAccess = onSnapshot(accessRef(user.uid), (snapshot) => {
+      if (currentUser?.uid !== user.uid) return;
+      const access = normalizeAccess(snapshot);
+      accessAllowed = access.allowed;
+      setStatus(access.allowed ? (hydrated ? "synced" : "syncing") : "blocked", access.allowed ? (hydrated ? "Dados salvos" : "Buscando seus dados") : "Acesso indisponível", {
+        accessResolved: true,
+        access,
+      });
+      if (access.allowed) {
+        startPresence(user.uid);
+        beginHydration(user.uid);
+      } else {
+        stopPresence(true);
+      }
+    }, (error) => {
+      console.error("Firebase access:", error);
+      accessAllowed = false;
+      stopPresence(false);
+      setStatus("error", "Não foi possível validar seu acesso", {
+        accessResolved: true,
+        access: { status: "error", allowed: false, plan: "", expiresAt: null, billing: null },
+      });
+    });
+    registerCurrentUser().catch((error) => console.warn("Firebase registration:", error?.code || error));
+  }
+
   function activateSignedInUser(user) {
     if (!user) return;
     const userChanged = currentUser?.uid !== user.uid;
+    if (userChanged) {
+      stopPresence(true);
+      stopAccessObserver();
+    }
     currentUser = user;
     authResolved = true;
 
     if (userChanged) {
       hydrated = false;
+      hydrationUserId = null;
       knownRemoteWorkoutIds = new Set();
       bridge.activateUser(userInfo(user));
-    }
-
-    setStatus(hydrated ? "synced" : "syncing", hydrated ? "Dados salvos" : "Buscando seus dados");
-    if (!hydrated && hydrationUserId !== user.uid) {
-      hydrationUserId = user.uid;
-      enqueue(async () => {
-        try {
-          await hydrateFromCloud(user.uid);
-        } finally {
-          if (hydrationUserId === user.uid) hydrationUserId = null;
-        }
-      });
+      observeAccess(user);
+    } else if (!unsubscribeAccess) {
+      observeAccess(user);
     }
   }
 
@@ -219,12 +352,17 @@ async function main() {
         reportError(error, "Permita pop-ups para este site e tente entrar novamente.");
         return;
       }
+      if (error?.code === "auth/user-disabled") {
+        reportError(error, "Esta conta está pausada ou cancelada.");
+        return;
+      }
       reportError(error, "Não foi possível entrar com Google.");
     }
   }
 
   async function signOut() {
     try {
+      await updatePresence(false);
       await firebaseSignOut(auth);
       bridge.toast("Conta desconectada. Seus dados locais continuam salvos.");
     } catch (error) {
@@ -235,21 +373,33 @@ async function main() {
   window.GymCloud = Object.freeze({ signIn, signOut });
 
   window.addEventListener("gym:data-changed", () => {
-    if (!currentUser) return;
+    if (!currentUser || !accessAllowed) return;
     const uid = currentUser.uid;
     clearTimeout(syncTimer);
     syncTimer = setTimeout(() => enqueue(() => hydrated ? pushLocalState(uid) : hydrateFromCloud(uid)), 550);
   });
 
   window.addEventListener("offline", () => {
-    if (currentUser) setStatus("offline", "Offline • alterações seguras neste aparelho");
+    if (currentUser && accessAllowed) {
+      updatePresence(false);
+      setStatus("offline", "Offline • alterações seguras neste aparelho");
+    }
   });
 
   window.addEventListener("online", () => {
-    if (currentUser) {
+    if (currentUser && accessAllowed) {
       const uid = currentUser.uid;
+      updatePresence(document.visibilityState === "visible", uid);
       enqueue(() => hydrated ? pushLocalState(uid) : hydrateFromCloud(uid));
     }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (currentUser && accessAllowed) updatePresence(document.visibilityState === "visible" && navigator.onLine);
+  });
+
+  window.addEventListener("pagehide", () => {
+    if (currentUser && accessAllowed) updatePresence(false);
   });
 
   onAuthStateChanged(auth, (user) => {
@@ -258,11 +408,17 @@ async function main() {
       activateSignedInUser(user);
       return;
     }
+    stopPresence(false);
+    stopAccessObserver();
+    accessAllowed = false;
     currentUser = null;
     hydrated = false;
     hydrationUserId = null;
     knownRemoteWorkoutIds = new Set();
-    setStatus("local", "Entre com Google para acessar seus dados");
+    setStatus("local", "Entre com Google para acessar seus dados", {
+      accessResolved: false,
+      access: { status: "checking", allowed: false, plan: "", expiresAt: null, billing: null },
+    });
   });
 }
 

@@ -1,5 +1,5 @@
-const CACHE = "meu-treino-v16";
-const ASSETS = ["./","./index.html","./styles.css","./app.js","./firebase-sync.js","./firebase-config.js","./manifest.webmanifest","./assets/icon.svg","./assets/icon-192.png","./assets/icon-512.png","./assets/apple-touch-icon.png","./assets/hero-costas.png"];
+const CACHE = "meu-treino-v18";
+const ASSETS = ["./","./index.html","./styles.css","./app.js","./firebase-sync.js","./firebase-config.js","./manifest.webmanifest","./admin/","./admin/index.html","./admin/admin.css","./admin/admin.js","./assets/icon.svg","./assets/icon-192.png","./assets/icon-512.png","./assets/apple-touch-icon.png","./assets/hero-costas.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)));
@@ -28,7 +28,10 @@ self.addEventListener("fetch", (event) => {
       }).catch(async () => {
         const cached = await caches.match(event.request, { ignoreSearch: true });
         if (cached) return cached;
-        if (event.request.mode === "navigate") return caches.match("./index.html");
+        if (event.request.mode === "navigate") {
+          if (url.pathname.includes("/admin")) return caches.match("./admin/index.html");
+          return caches.match("./index.html");
+        }
         return Response.error();
       }));
       return;

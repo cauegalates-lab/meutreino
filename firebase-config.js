@@ -9,3 +9,7 @@ export const firebaseConfig = {
   messagingSenderId: "907215064509",
   appId: "1:907215064509:web:cf5bc3cbe3ca0f2086d6d4",
 };
+
+// Opcional: chave pública de um App Check com reCAPTCHA Enterprise.
+// Deixe vazio até registrar todos os domínios publicados no Firebase App Check.
+export const appCheckSiteKey = "";
