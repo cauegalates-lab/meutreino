@@ -19,6 +19,8 @@ App web mobile para registrar treinos, cargas, séries, repetições, frequênci
 - Inclusão de séries extras.
 - Anotações por exercício durante o treino.
 - Cronômetro do treino.
+- Tela de execução compacta: imagem demonstrativa do exercício atual, séries abertas e os demais exercícios em uma lista curta para alternar com um toque.
+- Biblioteca com 29 imagens próprias em formato WebP, mostrando em vermelho os músculos trabalhados; o agachamento usa ângulo frontal/¾ e figurino padronizado.
 - Histórico salvo imediatamente no próprio aparelho, separado por conta, inclusive sem internet.
 - Integração preparada com Firebase Authentication + Cloud Firestore.
 - Login com Google e salvamento automático no Firebase, separado pelo identificador exclusivo de cada usuário.
@@ -33,6 +35,10 @@ App web mobile para registrar treinos, cargas, séries, repetições, frequênci
 - Tela de abertura curta ao iniciar pelo ícone da tela inicial, com transição para a sessão do usuário.
 - Login Google minimalista e cards com cores sólidas.
 - Rolagem mobile por toque sem barras artificiais e sem barra falsa de status do celular.
+
+## Adicionar vídeos depois
+
+Cada exercício já possui os campos `poster` e `videoUrl` no objeto `EXERCISE_MEDIA`, em `app.js`. Para trocar a imagem estática por um vídeo sem refazer a tela, coloque o arquivo dentro do projeto e preencha apenas `videoUrl`; o player com controles aparecerá automaticamente e continuará usando a imagem como capa.
 
 ## Ativar o Firebase
 

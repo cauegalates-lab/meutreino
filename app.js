@@ -17,6 +17,38 @@ let installOnboardingDismissed = readInstallOnboardingPreference();
 let installSuccessShown = false;
 let installPromptWaitExpired = !IS_ANDROID;
 
+const EXERCISE_MEDIA = Object.freeze({
+  "Supino reto": { poster: "assets/exercises/supino-reto.webp", videoUrl: "" },
+  "Supino inclinado": { poster: "assets/exercises/supino-inclinado.webp", videoUrl: "" },
+  "Crucifixo máquina": { poster: "assets/exercises/crucifixo-maquina.webp", videoUrl: "" },
+  "Tríceps corda": { poster: "assets/exercises/triceps-corda.webp", videoUrl: "" },
+  "Tríceps testa": { poster: "assets/exercises/triceps-testa.webp", videoUrl: "" },
+  "Mergulho": { poster: "assets/exercises/mergulho.webp", videoUrl: "" },
+  "Puxada alta": { poster: "assets/exercises/puxada-alta.webp", videoUrl: "" },
+  "Remada baixa": { poster: "assets/exercises/remada-baixa.webp", videoUrl: "" },
+  "Remada unilateral": { poster: "assets/exercises/remada-unilateral.webp", videoUrl: "" },
+  "Pulldown": { poster: "assets/exercises/pulldown.webp", videoUrl: "" },
+  "Rosca direta": { poster: "assets/exercises/rosca-direta.webp", videoUrl: "" },
+  "Rosca martelo": { poster: "assets/exercises/rosca-martelo.webp", videoUrl: "" },
+  "Agachamento livre": { poster: "assets/exercises/agachamento-livre.webp", videoUrl: "" },
+  "Leg press": { poster: "assets/exercises/leg-press.webp", videoUrl: "" },
+  "Cadeira extensora": { poster: "assets/exercises/cadeira-extensora.webp", videoUrl: "" },
+  "Mesa flexora": { poster: "assets/exercises/mesa-flexora.webp", videoUrl: "" },
+  "Stiff": { poster: "assets/exercises/stiff.webp", videoUrl: "" },
+  "Afundo": { poster: "assets/exercises/afundo.webp", videoUrl: "" },
+  "Panturrilha em pé": { poster: "assets/exercises/panturrilha-em-pe.webp", videoUrl: "" },
+  "Desenvolvimento": { poster: "assets/exercises/desenvolvimento.webp", videoUrl: "" },
+  "Elevação lateral": { poster: "assets/exercises/elevacao-lateral.webp", videoUrl: "" },
+  "Crucifixo inverso": { poster: "assets/exercises/crucifixo-inverso.webp", videoUrl: "" },
+  "Elevação frontal": { poster: "assets/exercises/elevacao-frontal.webp", videoUrl: "" },
+  "Encolhimento": { poster: "assets/exercises/encolhimento.webp", videoUrl: "" },
+  "Esteira": { poster: "assets/exercises/esteira.webp", videoUrl: "" },
+  "Abdominal máquina": { poster: "assets/exercises/abdominal-maquina.webp", videoUrl: "" },
+  "Prancha": { poster: "assets/exercises/prancha.webp", videoUrl: "" },
+  "Elevação de pernas": { poster: "assets/exercises/elevacao-de-pernas.webp", videoUrl: "" },
+  "Bike": { poster: "assets/exercises/bike.webp", videoUrl: "" },
+});
+
 const starterTemplates = [
   {
     name: "Peito + Tríceps", group: "Peito e braços", day: "SEG", color: "#ff8a3d", duration: 55,
@@ -32,8 +64,8 @@ const starterTemplates = [
   {
     name: "Costas + Bíceps", group: "Costas e braços", day: "TER", color: "#a7f432", duration: 50,
     exercises: [
-      ["Puxada alta", "4 séries alvo • Descanso 90s", 45, 12, "Último: 50 kg × 10", "+5 kg", "assets/puxada-alta.png"],
-      ["Remada baixa", "3 séries alvo • Descanso 90s", 50, 10, "Último: 50 kg × 10", "+5 kg", "assets/remada-baixa.png"],
+      ["Puxada alta", "4 séries alvo • Descanso 90s", 45, 12, "Último: 50 kg × 10", "+5 kg"],
+      ["Remada baixa", "3 séries alvo • Descanso 90s", 50, 10, "Último: 50 kg × 10", "+5 kg"],
       ["Remada unilateral", "3 séries alvo • Descanso 75s", 28, 10, "Último: 26 kg × 10", "+2 kg"],
       ["Pulldown", "3 séries alvo • Descanso 60s", 35, 12, "Último: 32 kg × 12", "+3 kg"],
       ["Rosca direta", "3 séries alvo • Descanso 75s", 27, 10, "Último: 25 kg × 10", "+2 kg"],
@@ -608,7 +640,8 @@ function lastExerciseRecord(exerciseName) {
 function createExercises(template) {
   return template.exercises.map((preset, exerciseIndex) => {
     const [name, note, defaultWeight, defaultReps] = preset;
-    const image = preset[6];
+    const legacyImage = preset[6];
+    const media = EXERCISE_MEDIA[name] || { poster: legacyImage || "", videoUrl: "" };
     const customSetCount = preset[7];
     const previous = lastExerciseRecord(name);
     const setCount = Number(customSetCount) || (exerciseIndex === 0 || /Agachamento|Leg press|Desenvolvimento/.test(name) ? 4 : 3);
@@ -622,7 +655,7 @@ function createExercises(template) {
     const restMatch = String(note || "").match(/Descanso\s+(\d+)s/i);
     return {
       name, note, last: previousMax !== null ? `Último: ${formatWeight(previousMax)} kg` : "Sem registro anterior",
-      image, sets, noteText: "", restSeconds: Number(restMatch?.[1]) || 90,
+      image: media.poster, videoUrl: media.videoUrl, sets, noteText: "", restSeconds: Number(restMatch?.[1]) || 90,
     };
   });
 }
@@ -859,23 +892,40 @@ function renderProfile() {
 
 function renderActiveWorkout() {
   const active = state.active;
-  const completedSets = active.exercises.reduce((sum,exercise)=>sum+exercise.sets.filter((set)=>set.done).length,0);
-  const totalSets = active.exercises.reduce((sum,exercise)=>sum+exercise.sets.length,0);
-  const progress = Math.max(4, (completedSets/totalSets)*100);
+  const exerciseIndex = Math.min(Math.max(0, Number(active.currentExerciseIndex) || 0), active.exercises.length - 1);
+  const exercise = active.exercises[exerciseIndex];
+  const completedSets = active.exercises.reduce((sum, item) => sum + item.sets.filter((set) => set.done).length, 0);
+  const totalSets = active.exercises.reduce((sum, item) => sum + item.sets.length, 0);
+  const progress = totalSets ? Math.max(4, (completedSets / totalSets) * 100) : 0;
+  const otherExercises = active.exercises
+    .map((item, index) => ({ item, index }))
+    .filter(({ index }) => index !== exerciseIndex);
   viewRoot.innerHTML = `<div class="active-workout-screen">
     <header class="workout-header"><button class="round-button" data-action="back-workout" aria-label="Voltar">${icon("arrow-left")}</button><div><h1>${escapeHtml(active.template.name)}</h1><span>${completedSets} de ${totalSets} séries concluídas</span></div><button class="round-button" aria-label="Mais opções">${icon("more")}</button></header>
     <section class="timer-block"><span class="timer-icon">${icon("clock")}</span><strong id="workout-elapsed">${formatDuration(active.elapsed)}</strong><small>TEMPO DE TREINO</small></section>
     <div class="workout-progress"><i style="width:${progress}%"></i></div>
-    <div class="exercise-list">${active.exercises.map((exercise,exerciseIndex)=>exerciseCard(exercise,exerciseIndex)).join("")}</div>
+    ${exerciseMediaPanel(exercise, exerciseIndex, active.exercises.length)}
+    <div class="exercise-list">${exerciseCard(exercise, exerciseIndex)}</div>
+    ${otherExercises.length ? `<section class="exercise-queue" aria-label="Exercícios do treino"><header><div><span>SEU TREINO</span><h2>Outros exercícios</h2></div><strong>${exerciseIndex + 1} de ${active.exercises.length}</strong></header><div class="exercise-queue-list">${otherExercises.map(({ item, index }) => exerciseQueueItem(item, index)).join("")}</div></section>` : ""}
     ${state.restSeconds>0?`<div class="rest-timer"><span>${icon("clock")} Descanso <strong id="rest-value">${formatDuration(state.restSeconds)}</strong></span><div><button data-action="rest-plus">+30s</button><button data-action="skip-rest">Pular</button></div></div>`:""}
     <div class="finish-bar"><button class="finish-button" data-action="finish-workout">Finalizar treino <span>${icon("check")}</span></button></div>
   </div>`;
 }
 
+function exerciseMediaPanel(exercise, exerciseIndex, exerciseCount) {
+  const poster = exercise.image
+    ? `<img src="${escapeHtml(exercise.image)}" alt="Demonstração de ${escapeHtml(exercise.name)}">`
+    : `<span class="exercise-media-fallback">${icon("dumbbell")}</span>`;
+  if (exercise.videoUrl) {
+    return `<section class="exercise-media" id="exercise-media"><video controls playsinline preload="metadata" poster="${escapeHtml(exercise.image || "")}" aria-label="Vídeo demonstrativo de ${escapeHtml(exercise.name)}"><source src="${escapeHtml(exercise.videoUrl)}"></video><div class="exercise-media-heading"><small>EXERCÍCIO ${exerciseIndex + 1} DE ${exerciseCount}</small><strong>${escapeHtml(exercise.name)}</strong></div></section>`;
+  }
+  return `<section class="exercise-media" id="exercise-media"><button type="button" class="exercise-media-placeholder" data-action="media-placeholder" aria-label="Demonstração de ${escapeHtml(exercise.name)} em breve">${poster}<span class="exercise-media-shade"></span><span class="exercise-media-heading"><small>EXERCÍCIO ${exerciseIndex + 1} DE ${exerciseCount}</small><strong>${escapeHtml(exercise.name)}</strong></span><span class="exercise-media-play">${icon("play")}</span><span class="exercise-media-status">Imagem demonstrativa</span></button></section>`;
+}
+
 function exerciseCard(exercise, exerciseIndex) {
   const done = exercise.sets.every((set)=>set.done);
   return `<section class="exercise-card">
-    <div class="exercise-head"><div class="exercise-visual">${exercise.image?`<img src="${exercise.image}" alt="${escapeHtml(exercise.name)}"/>`:icon("dumbbell")}</div><div><h2>${escapeHtml(exercise.name)}</h2><p>${escapeHtml(exercise.note)}</p></div><span class="exercise-complete ${done?"done":""}">${icon("check")}</span></div>
+    <div class="exercise-head active-exercise-head"><div><span>EXERCÍCIO ATUAL</span><h2>${escapeHtml(exercise.name)}</h2><p>${escapeHtml(exercise.note)}</p></div><span class="exercise-complete ${done?"done":""}">${icon("check")}</span></div>
     <div class="set-table-head"><span>SÉRIE</span><span>CARGA</span><span>REPS</span><span>OK</span></div>
     <div class="set-list">${exercise.sets.map((set,setIndex)=>`<div class="set-row ${set.done?"done":""}"><span class="set-number">${setIndex+1}</span><div class="weight-control"><button data-action="weight-step" data-exercise="${exerciseIndex}" data-set="${setIndex}" data-delta="-2.5" aria-label="Diminuir 2,5 kg">−</button><label><input type="number" inputmode="decimal" min="0" step="0.5" value="${set.weight}" data-action="set-input" data-exercise="${exerciseIndex}" data-set="${setIndex}" data-field="weight" aria-label="Carga da série ${setIndex+1} de ${escapeHtml(exercise.name)}"><em>kg</em></label><button data-action="weight-step" data-exercise="${exerciseIndex}" data-set="${setIndex}" data-delta="2.5" aria-label="Aumentar 2,5 kg">+</button></div><label><input type="number" inputmode="numeric" min="1" step="1" value="${set.reps}" data-action="set-input" data-exercise="${exerciseIndex}" data-set="${setIndex}" data-field="reps" aria-label="Repetições da série ${setIndex+1} de ${escapeHtml(exercise.name)}"><em>reps</em></label><button data-action="toggle-set" data-exercise="${exerciseIndex}" data-set="${setIndex}" aria-label="${set.done?"Desmarcar":"Concluir"} série">${icon("check")}</button></div>`).join("")}</div>
     <button class="add-set-button" data-action="add-set" data-exercise="${exerciseIndex}">${icon("plus")} Adicionar série</button>
@@ -884,9 +934,15 @@ function exerciseCard(exercise, exerciseIndex) {
   </section>`;
 }
 
+function exerciseQueueItem(exercise, exerciseIndex) {
+  const completedSets = exercise.sets.filter((set) => set.done).length;
+  const done = completedSets === exercise.sets.length;
+  return `<button type="button" class="exercise-queue-item ${done ? "done" : ""}" data-action="select-active-exercise" data-exercise="${exerciseIndex}" aria-label="Abrir ${escapeHtml(exercise.name)}"><span class="exercise-queue-thumb">${exercise.image ? `<img src="${escapeHtml(exercise.image)}" alt="">` : icon("dumbbell")}</span><span class="exercise-queue-copy"><small>EXERCÍCIO ${exerciseIndex + 1}</small><strong>${escapeHtml(exercise.name)}</strong><em>${completedSets} de ${exercise.sets.length} séries concluídas</em></span><span class="exercise-queue-state">${done ? icon("check") : icon("chevron")}</span></button>`;
+}
+
 function startWorkout(template) {
   stopTimers();
-  state.active = { template, exercises: createExercises(template), elapsed: 0, startedAt: Date.now() };
+  state.active = { template, exercises: createExercises(template), currentExerciseIndex: 0, elapsed: 0, startedAt: Date.now() };
   state.restSeconds = 0;
   state.timerId = setInterval(() => {
     if (!state.active) return;
@@ -1073,6 +1129,15 @@ document.addEventListener("click", async (event) => {
   if (action === "edit-training-days") showTrainingDaysEditor();
   if (action === "edit-settings") showSettingsEditor();
   if (action === "back-workout") { stopTimers(); state.active = null; state.restSeconds = 0; render(); window.scrollTo({top:0}); }
+  if (action === "media-placeholder") showToast("O vídeo deste exercício será adicionado em breve.");
+  if (action === "select-active-exercise" && state.active) {
+    const nextIndex = Number(button.dataset.exercise);
+    if (Number.isInteger(nextIndex) && state.active.exercises[nextIndex]) {
+      state.active.currentExerciseIndex = nextIndex;
+      renderActiveWorkout();
+      requestAnimationFrame(() => document.getElementById("exercise-media")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    }
+  }
   if (action === "toggle-set") {
     const ex = Number(button.dataset.exercise), setIndex = Number(button.dataset.set);
     const set = state.active.exercises[ex].sets[setIndex];
