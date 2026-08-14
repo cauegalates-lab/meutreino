@@ -10,6 +10,7 @@ App web mobile para registrar treinos, cargas, séries, repetições, frequênci
 ## O que já funciona
 
 - Treino do dia e rotina semanal.
+- Rotina inicial pronta com seis dias de treino; cada conta pode substituir um dia por seu próprio treino.
 - Criação e exclusão de treinos personalizados, com dia, grupo, duração, exercícios, séries, repetições, carga e descanso.
 - Registro de carga e repetições por série.
 - Ajuste rápido de carga em passos de 2,5 kg.
@@ -63,5 +64,6 @@ As regras permitem leitura e escrita somente quando o usuário autenticado possu
 
 Desde a versão 11, o armazenamento local também é separado por `uid`. Ao atualizar,
 a rotina e os dados locais da versão anterior são migrados apenas para a conta
-que já era dona daquele navegador. Uma conta nova começa com perfil, rotina e
-histórico vazios e monta o próprio treino.
+que já era dona daquele navegador. Uma conta nova recebe somente a rotina inicial
+como ponto de partida. Perfil, cargas, treinos personalizados e histórico continuam
+privados e separados por conta.

@@ -17,7 +17,7 @@ let installOnboardingDismissed = readInstallOnboardingPreference();
 let installSuccessShown = false;
 let installPromptWaitExpired = !IS_ANDROID;
 
-const legacyTemplates = [
+const starterTemplates = [
   {
     name: "Peito + Tríceps", group: "Peito e braços", day: "SEG", color: "#ff8a3d", duration: 55,
     exercises: [
@@ -76,9 +76,14 @@ const legacyTemplates = [
       ["Bike", "10 min • Ritmo forte", 0, 10, "Último: 8 minutos", "+2 min"],
     ],
   },
-];
+].map((template, index) => ({
+  ...template,
+  id: `starter-routine-${index + 1}`,
+  starter: true,
+  custom: false,
+}));
 
-legacyTemplates[4].exercises = legacyTemplates[1].exercises;
+starterTemplates[4].exercises = starterTemplates[1].exercises.map((exercise) => [...exercise]);
 
 const restTemplate = { name: "Descanso", group: "Recuperação", day: "DOM", color: "#7b858a", duration: 0, exercises: [] };
 
@@ -272,7 +277,7 @@ function loadHistory(uid = activeStorageUid) {
 
 function loadCustomTemplates(uid = activeStorageUid) {
   const parsed = readJson(storageKey(CUSTOM_KEY, uid), []);
-  return Array.isArray(parsed) ? parsed : [];
+  return normalizeCustomTemplates(parsed);
 }
 
 function defaultProfile() {
@@ -280,19 +285,29 @@ function defaultProfile() {
     weight: 0,
     height: 0,
     goal: "",
-    frequency: 0,
-    trainingDays: [],
+    frequency: DEFAULT_TRAINING_DAYS.length,
+    trainingDays: [...DEFAULT_TRAINING_DAYS],
     photoDataUrl: "",
     settings: { autoRest: true, vibration: true, defaultRest: 90 },
   };
 }
 
+function normalizeCustomTemplates(templates) {
+  if (!Array.isArray(templates)) return [];
+  return templates.filter((template) => {
+    const id = String(template?.id || "");
+    return template && !/^legacy-routine-[1-6]$/.test(id) && !/^starter-routine-[1-6]$/.test(id);
+  });
+}
+
 function normalizeProfile(profile = {}) {
   const fallback = defaultProfile();
   const legacyFrequency = Math.min(7, Math.max(0, Number(profile.frequency) || 0));
-  const requestedDays = Array.isArray(profile.trainingDays)
+  const requestedDays = Array.isArray(profile.trainingDays) && profile.trainingDays.length
     ? profile.trainingDays
-    : WEEK_DAYS.slice(0, legacyFrequency);
+    : legacyFrequency
+      ? WEEK_DAYS.slice(0, legacyFrequency)
+      : DEFAULT_TRAINING_DAYS;
   const trainingDays = WEEK_DAYS.filter((day) => requestedDays.includes(day));
   return {
     ...fallback,
@@ -364,7 +379,7 @@ function applyCloudSnapshot(payload = {}, options = {}) {
   if (Array.isArray(payload.history)) {
     state.history = [...payload.history].sort((a, b) => new Date(b.completedAt || 0) - new Date(a.completedAt || 0));
   }
-  if (Array.isArray(payload.customTemplates)) state.customTemplates = payload.customTemplates;
+  if (Array.isArray(payload.customTemplates)) state.customTemplates = normalizeCustomTemplates(payload.customTemplates);
   if (payload.profile && typeof payload.profile === "object") state.profile = normalizeProfile({ ...state.profile, ...payload.profile });
   const updatedAt = Math.max(localUpdatedAt(), Number(payload.updatedAt) || 0);
   try {
@@ -375,15 +390,6 @@ function applyCloudSnapshot(payload = {}, options = {}) {
   } catch {}
   render();
   if (options.notify) showToast(options.notify);
-}
-
-function legacyTemplateCopies() {
-  return legacyTemplates.map((template, index) => ({
-    ...template,
-    id: `legacy-routine-${index + 1}`,
-    custom: true,
-    exercises: template.exercises.map((exercise) => [...exercise]),
-  }));
 }
 
 function scopedDataExists(uid) {
@@ -442,10 +448,7 @@ function activateCloudUser(userOrUid) {
     state.profile = loadProfile(uid);
   } else if (shouldMigrateLegacy) {
     state.history = loadHistory("");
-    const savedTemplates = loadCustomTemplates("");
-    state.customTemplates = state.history.length
-      ? [...savedTemplates, ...legacyTemplateCopies()]
-      : savedTemplates;
+    state.customTemplates = loadCustomTemplates("");
     state.profile = loadProfile("");
     saveActiveAccount(localUpdatedAt(""));
   } else {
@@ -479,7 +482,10 @@ function setCloudStatus(next = {}) {
 }
 
 function allTemplates() {
-  return [...state.customTemplates];
+  const customDays = new Set(state.customTemplates.map((template) => template.day));
+  const startersWithoutCustomReplacement = starterTemplates.filter((template) => !customDays.has(template.day));
+  return [...state.customTemplates, ...startersWithoutCustomReplacement]
+    .sort((a, b) => WEEK_DAYS.indexOf(a.day) - WEEK_DAYS.indexOf(b.day));
 }
 
 function formatNumber(value) {
@@ -555,12 +561,12 @@ function buildWeek() {
 }
 
 function templateForDay(day) {
-  const trainingDays = state.profile.trainingDays || [];
-  if (!trainingDays.length) {
-    return { ...restTemplate, name: "Crie seu primeiro treino", group: "Sua rotina", day, needsSetup: true };
-  }
+  const trainingDays = state.profile.trainingDays?.length
+    ? state.profile.trainingDays
+    : DEFAULT_TRAINING_DAYS;
   if (!trainingDays.includes(day)) return { ...restTemplate, day };
   return state.customTemplates.find((template) => template.day === day)
+    || starterTemplates.find((template) => template.day === day)
     || { ...restTemplate, name: "Treino não configurado", group: "Sua rotina", day, needsSetup: true };
 }
 
