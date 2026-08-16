@@ -41,6 +41,7 @@ async function main() {
     window.GymCloud = Object.freeze({
       signIn: () => bridge.toast("Falta adicionar a configuração do seu projeto Firebase."),
       signOut: () => {},
+      retryAccess: () => bridge.toast("Falta adicionar a configuração do seu projeto Firebase."),
     });
     return;
   }
@@ -85,6 +86,9 @@ async function main() {
   let unsubscribeAccess = null;
   let presenceTimer = null;
   let accessAllowed = false;
+  let accessRetryTimer = null;
+  let accessRetryAttempt = 0;
+  let accessRequestId = 0;
 
   const userInfo = (user) => user ? {
     uid: user.uid,
@@ -300,6 +304,9 @@ async function main() {
   function stopAccessObserver() {
     if (typeof unsubscribeAccess === "function") unsubscribeAccess();
     unsubscribeAccess = null;
+    if (accessRetryTimer) clearTimeout(accessRetryTimer);
+    accessRetryTimer = null;
+    accessRequestId += 1;
   }
 
   function beginHydration(uid) {
@@ -314,16 +321,40 @@ async function main() {
     });
   }
 
-  function observeAccess(user) {
+  function accessErrorState(error) {
+    return {
+      status: "error",
+      allowed: false,
+      plan: "",
+      expiresAt: null,
+      billing: null,
+      errorCode: String(error?.code || "unknown"),
+    };
+  }
+
+  function scheduleAccessRetry(user, error) {
+    const retryableCodes = ["unavailable", "deadline-exceeded", "internal", "unknown", "resource-exhausted"];
+    const code = String(error?.code || "").replace(/^firestore\//, "");
+    if (!retryableCodes.includes(code) || currentUser?.uid !== user.uid) return;
+    const delay = Math.min(12000, 1500 * (2 ** accessRetryAttempt));
+    accessRetryAttempt += 1;
+    if (accessRetryTimer) clearTimeout(accessRetryTimer);
+    accessRetryTimer = window.setTimeout(() => {
+      accessRetryTimer = null;
+      if (currentUser?.uid === user.uid) observeAccess(user, { quiet: true });
+    }, delay);
+  }
+
+  function attachAccessObserver(user, requestId) {
+    if (currentUser?.uid !== user.uid || requestId !== accessRequestId) return;
     stopAccessObserver();
-    accessAllowed = false;
-    setStatus("checking", "Validando seu acesso", {
-      accessResolved: false,
-      access: { status: "checking", allowed: false, plan: "", expiresAt: null, billing: null },
-    });
+    // stopAccessObserver invalida o identificador anterior; esta observação passa
+    // a usar o novo identificador ativo.
+    const activeRequestId = accessRequestId;
 
     unsubscribeAccess = onSnapshot(accessRef(user.uid), (snapshot) => {
-      if (currentUser?.uid !== user.uid) return;
+      if (currentUser?.uid !== user.uid || activeRequestId !== accessRequestId) return;
+      accessRetryAttempt = 0;
       const access = normalizeAccess(snapshot);
       accessAllowed = access.allowed;
       setStatus(access.allowed ? (hydrated ? "synced" : "syncing") : "blocked", access.allowed ? (hydrated ? "Dados salvos" : "Buscando seus dados") : "Acesso indisponível", {
@@ -338,21 +369,48 @@ async function main() {
       }
     }, (error) => {
       console.error("Firebase access:", error);
+      if (currentUser?.uid !== user.uid || activeRequestId !== accessRequestId) return;
       accessAllowed = false;
       stopPresence(false);
       setStatus("error", "Não foi possível validar seu acesso", {
         accessResolved: true,
-        access: { status: "error", allowed: false, plan: "", expiresAt: null, billing: null },
+        access: accessErrorState(error),
       });
+      scheduleAccessRetry(user, error);
     });
-    ensureAccessRegistration(user).catch((error) => {
+  }
+
+  function observeAccess(user, { quiet = false } = {}) {
+    stopAccessObserver();
+    const requestId = accessRequestId;
+    accessAllowed = false;
+    if (!quiet) {
+      setStatus("checking", "Validando seu acesso", {
+        accessResolved: false,
+        access: { status: "checking", allowed: false, plan: "", expiresAt: null, billing: null },
+      });
+    }
+
+    // Primeiro cria ou confirma o cadastro. Só depois começa a acompanhar o
+    // documento, evitando a disputa que podia deixar a tela presa no erro.
+    ensureAccessRegistration(user).then(() => {
+      if (currentUser?.uid !== user.uid || requestId !== accessRequestId) return;
+      attachAccessObserver(user, requestId);
+    }).catch((error) => {
       console.error("Firebase registration:", error);
-      if (currentUser?.uid !== user.uid) return;
+      if (currentUser?.uid !== user.uid || requestId !== accessRequestId) return;
       setStatus("error", "Não foi possível cadastrar seu acesso", {
         accessResolved: true,
-        access: { status: "error", allowed: false, plan: "", expiresAt: null, billing: null },
+        access: accessErrorState(error),
       });
+      scheduleAccessRetry(user, error);
     });
+  }
+
+  function retryAccess() {
+    if (!currentUser) return;
+    accessRetryAttempt = 0;
+    observeAccess(currentUser);
   }
 
   function activateSignedInUser(user) {
@@ -398,16 +456,35 @@ async function main() {
   }
 
   async function signOut() {
+    const signingOutUser = currentUser;
     try {
-      await updatePresence(false);
+      // A saída da conta não pode depender do Firestore estar disponível.
+      // A presença é atualizada em segundo plano e a sessão é encerrada primeiro.
+      if (signingOutUser) void updatePresence(false, signingOutUser.uid);
+      stopPresence(false);
+      stopAccessObserver();
+      accessAllowed = false;
       await firebaseSignOut(auth);
+      currentUser = null;
+      authResolved = true;
+      hydrated = false;
+      hydrationUserId = null;
+      knownRemoteWorkoutIds = new Set();
+      setStatus("local", "Entre com Google para acessar seus dados", {
+        accessResolved: false,
+        access: { status: "checking", allowed: false, plan: "", expiresAt: null, billing: null },
+      });
       bridge.toast("Conta desconectada. Seus dados locais continuam salvos.");
     } catch (error) {
+      if (signingOutUser) {
+        currentUser = signingOutUser;
+        observeAccess(signingOutUser, { quiet: true });
+      }
       reportError(error, "Não foi possível desconectar agora.");
     }
   }
 
-  window.GymCloud = Object.freeze({ signIn, signOut });
+  window.GymCloud = Object.freeze({ signIn, signOut, retryAccess });
 
   window.addEventListener("gym:data-changed", () => {
     if (!currentUser || !accessAllowed) return;
@@ -466,5 +543,6 @@ main().catch(async (error) => {
   window.GymCloud = Object.freeze({
     signIn: () => bridge.toast("Firebase indisponível. Recarregue o app e tente novamente."),
     signOut: () => {},
+    retryAccess: () => bridge.toast("Firebase indisponível. Recarregue o app e tente novamente."),
   });
 });

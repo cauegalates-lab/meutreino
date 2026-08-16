@@ -781,6 +781,9 @@ function renderAccessScreen() {
     error: ["Não foi possível validar o acesso", "Verifique sua conexão e tente abrir o aplicativo novamente."],
   }[access.status] || ["Acesso indisponível", "Esta conta ainda não possui acesso ao aplicativo."];
   const planLabels = { pro: "Meu Treino Pro" };
+  const retryButton = access.status === "error"
+    ? `<button class="google-login-button access-retry" data-action="cloud-retry">${icon("refresh")}<span>Tentar novamente</span></button>`
+    : "";
   viewRoot.innerHTML = `<div class="auth-screen access-screen">
     <section class="auth-shell" aria-live="polite">
       <div class="auth-brand-mark access-brand-mark">${icon(checking ? "clock" : "lock")}</div>
@@ -789,7 +792,7 @@ function renderAccessScreen() {
       <p class="auth-copy">${checking ? "Estamos consultando sua assinatura..." : content[1]}</p>
       ${checking
         ? `<div class="auth-loading"><span class="auth-spinner"></span><small>Consultando acesso</small></div>`
-        : `<div class="access-account"><strong>${escapeHtml(state.cloud.user?.displayName || "Sua conta")}</strong><span>${escapeHtml(state.cloud.user?.email || "")}</span>${access.plan ? `<small>${escapeHtml(planLabels[access.plan] || access.plan)}</small>` : ""}</div><button class="google-login-button access-logout" data-action="cloud-logout">${icon("log-out")}<span>Entrar com outra conta</span></button>`}
+        : `<div class="access-account"><strong>${escapeHtml(state.cloud.user?.displayName || "Sua conta")}</strong><span>${escapeHtml(state.cloud.user?.email || "")}</span>${access.plan ? `<small>${escapeHtml(planLabels[access.plan] || access.plan)}</small>` : ""}</div><div class="access-actions">${retryButton}<button class="google-login-button access-logout" data-action="cloud-logout">${icon("log-out")}<span>Entrar com outra conta</span></button></div>`}
       <p class="auth-footnote">Seus dados continuam privados e vinculados à sua conta.</p>
     </section>
   </div>`;
@@ -1343,8 +1346,20 @@ document.addEventListener("click", async (event) => {
     if (window.GymCloud?.signIn) window.GymCloud.signIn();
     else showToast("Firebase ainda não foi configurado neste projeto.");
   }
+  if (action === "cloud-retry") {
+    button.disabled = true;
+    const label = button.querySelector("span");
+    if (label) label.textContent = "Tentando novamente…";
+    if (window.GymCloud?.retryAccess) window.GymCloud.retryAccess();
+    else showToast("Reabra o aplicativo para tentar novamente.");
+  }
   if (action === "cloud-logout") {
-    if (window.GymCloud?.signOut) window.GymCloud.signOut();
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    const label = button.querySelector("span");
+    if (label) label.textContent = "Saindo…";
+    if (window.GymCloud?.signOut) await window.GymCloud.signOut();
+    else showToast("Firebase ainda não foi configurado neste projeto.");
   }
 });
 
