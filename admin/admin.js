@@ -534,6 +534,7 @@ async function refreshUsers({ quiet = false } = {}) {
     if (state.users.length) render();
   }
   try {
+    await state.user.getIdToken();
     await assertAdmin();
     const { db, collection, getDocs } = state.firestore;
     const [accessSnapshot, presenceSnapshot, notesSnapshot] = await Promise.all([
@@ -747,7 +748,12 @@ async function main() {
     });
   }
   const auth = authSdk.getAuth(app);
-  const db = firestoreSdk.getFirestore(app);
+  // Usa um transporte compatível com redes que bloqueiam ou armazenam em buffer
+  // o canal padrão do Firestore.
+  const db = firestoreSdk.initializeFirestore(app, {
+    experimentalForceLongPolling: true,
+    experimentalLongPollingOptions: { timeoutSeconds: 25 },
+  });
   state.auth = {
     instance: auth,
     GoogleAuthProvider: authSdk.GoogleAuthProvider,

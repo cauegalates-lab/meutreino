@@ -3,7 +3,7 @@
   "short_name": "Treino",
   "description": "Treinos, cargas, séries e evolução.",
   "id": "./",
-  "start_url": "./index.html?source=pwa&v=20",
+  "start_url": "./index.html?source=pwa&v=21",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait-primary",

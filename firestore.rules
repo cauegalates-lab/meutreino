@@ -28,7 +28,6 @@ service cloud.firestore {
           'expiresAt', 'createdAt', 'updatedAt'
         ])
         && request.resource.data.uid == userId
-        && request.resource.data.email == request.auth.token.email
         && request.resource.data.email is string
         && request.resource.data.email.size() <= 320
         && request.resource.data.displayName is string
@@ -38,15 +37,14 @@ service cloud.firestore {
         && request.resource.data.plan == 'pro'
         && request.resource.data.status == 'active'
         && request.resource.data.expiresAt == null
-        && request.resource.data.createdAt == request.time
-        && request.resource.data.updatedAt == request.time;
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
     }
 
     function validPendingActivation(userId) {
       return isSelf(userId)
         && resource.data.status == 'pending'
         && request.resource.data.status == 'active'
-        && request.resource.data.email == request.auth.token.email
         && request.resource.data.email is string
         && request.resource.data.email.size() <= 320
         && request.resource.data.displayName is string
@@ -54,7 +52,7 @@ service cloud.firestore {
         && request.resource.data.photoURL is string
         && request.resource.data.photoURL.size() <= 2048
         && request.resource.data.expiresAt == null
-        && request.resource.data.updatedAt == request.time
+        && request.resource.data.updatedAt is timestamp
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'email', 'displayName', 'photoURL', 'status', 'expiresAt', 'updatedAt'
         ]);
@@ -73,18 +71,18 @@ service cloud.firestore {
     }
 
     match /users/{userId}/{document=**} {
-      allow read, write: if isAdmin() || (isSelf(userId) && hasActiveAccess(userId));
+      allow read, write: if (isSelf(userId) && hasActiveAccess(userId)) || isAdmin();
     }
 
     match /access/{userId} {
-      allow read: if isAdmin() || isSelf(userId);
-      allow create: if isAdmin() || validInitialAccess(userId);
-      allow update: if isAdmin() || validPendingActivation(userId);
+      allow read: if isSelf(userId) || isAdmin();
+      allow create: if validInitialAccess(userId) || isAdmin();
+      allow update: if validPendingActivation(userId) || isAdmin();
       allow delete: if isAdmin();
     }
 
     match /presence/{userId} {
-      allow read: if isAdmin() || isSelf(userId);
+      allow read: if isSelf(userId) || isAdmin();
       allow create: if isSelf(userId)
         && validPresence(userId)
         && request.resource.data.keys().hasOnly(['uid', 'online', 'lastSeen', 'displayName', 'email', 'photoURL']);
@@ -95,7 +93,7 @@ service cloud.firestore {
     }
 
     match /admins/{adminId} {
-      allow read: if isAdmin() || isSelf(adminId);
+      allow read: if isSelf(adminId) || isAdmin();
       allow write: if false;
     }
 

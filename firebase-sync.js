@@ -62,7 +62,7 @@ async function main() {
     signInWithPopup,
     signOut: firebaseSignOut,
   } = authSdk;
-  const { getFirestore, doc, collection, getDoc, getDocs, setDoc, writeBatch, serverTimestamp, onSnapshot } = firestoreSdk;
+  const { initializeFirestore, doc, collection, getDoc, getDocs, setDoc, writeBatch, serverTimestamp, onSnapshot } = firestoreSdk;
 
   const firebaseApp = initializeApp(firebaseConfig);
   if (String(appCheckSiteKey || "").trim()) {
@@ -72,7 +72,12 @@ async function main() {
     });
   }
   const auth = getAuth(firebaseApp);
-  const db = getFirestore(firebaseApp);
+  // Algumas redes, proxies e navegadores móveis interrompem o canal WebChannel
+  // padrão do Firestore. O long polling mantém o acesso estável nesses casos.
+  const db = initializeFirestore(firebaseApp, {
+    experimentalForceLongPolling: true,
+    experimentalLongPollingOptions: { timeoutSeconds: 25 },
+  });
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
 
@@ -103,6 +108,9 @@ async function main() {
   const presenceRef = (uid) => doc(db, "presence", uid);
 
   async function ensureAccessRegistration(user) {
+    // Garante que o Firestore já recebeu a credencial do login Google antes
+    // da primeira leitura, especialmente ao voltar do popup no celular.
+    await user.getIdToken();
     const reference = accessRef(user.uid);
     const snapshot = await getDoc(reference);
     if (snapshot.exists()) {
