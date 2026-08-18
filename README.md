@@ -75,7 +75,7 @@ O documento `admins/{uid}` não pode ser criado ou alterado pelo site. Isso evit
 
 ## Como o bloqueio manual funciona
 
-- O primeiro login cria `access/{uid}` com `status: "active"`. Portanto, todos entram liberados por enquanto.
+- O primeiro login com Google cria automaticamente `access/{uid}` com `status: "active"`. Portanto, todos entram liberados por enquanto e passam a aparecer na central.
 - Quando alguém não pagar, abra `/admin/` e toque em **Bloquear**.
 - A central altera o status para `paused`; o app fecha o acesso assim que o aparelho receber a mudança.
 - Para devolver o acesso, toque em **Liberar**.
@@ -98,10 +98,19 @@ A coleção `admins` é a única criada manualmente, uma vez, para cadastrar sua
 
 O controle das 12 parcelas de R$ 29,99 continua manual. A central pode criar as parcelas e marcar cada uma como paga ou pendente. Os campos `pixCode` e `qrCodeUrl` ficam vazios até você definir o recebimento; o Firebase não cobra nem confirma pagamentos sozinho.
 
+
+### Ajustes de estabilidade desta versão
+
+- Login e cadastro de acesso usam Firestore Lite (REST), evitando a conexão WebChannel que podia retornar `unavailable`.
+- O painel administrativo carrega primeiro a lista de acessos e busca presença/observações em segundo plano.
+- A central mantém um cache local do último resultado depois de confirmar a conta administradora, deixando reaberturas mais rápidas.
+- O App Check só é carregado se uma chave tiver sido configurada.
+- Cache do PWA atualizado para a versão 21 para impedir que o navegador continue usando os scripts antigos.
+
 ## Observações importantes
 
 - O login Google usa `signInWithPopup` no computador e no celular.
 - O domínio da Vercel precisa estar autorizado no Firebase Authentication.
-- Um bloqueio chega aos aparelhos quando eles estão conectados. Um aparelho totalmente offline só recebe a mudança ao voltar à internet.
+- O app revalida o acesso periodicamente e ao voltar para a tela; um bloqueio normalmente aparece em até 30 segundos enquanto estiver online. Um aparelho offline recebe a mudança ao voltar à internet.
 - Para apagar o registro de uma pessoa em **Authentication > Users**, faça isso manualmente no Firebase Console. A central consegue bloquear e remover os dados do Firestore, mas não apagar outra conta do Authentication sem um servidor administrativo.
 - O armazenamento local é separado por UID. Perfil, cargas, treinos personalizados e histórico permanecem privados entre contas.

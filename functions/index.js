@@ -161,14 +161,15 @@ exports.registerCurrentUser = onCall(async (request) => {
         uid,
         email: String(request.auth.token.email || ""),
         displayName: String(request.auth.token.name || ""),
+        photoURL: String(request.auth.token.picture || ""),
         plan: PLAN_ID,
-        status: "pending",
+        status: "active",
         expiresAt: null,
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       });
     });
-    return { ok: true, status: "pending", plan: PLAN_ID };
+    return { ok: true, status: "active", plan: PLAN_ID };
   } catch (error) {
     throw publicError(error);
   }

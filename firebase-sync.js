@@ -1,6 +1,7 @@
 import { appCheckSiteKey, firebaseConfig } from "./firebase-config.js";
 
-const FIREBASE_VERSION = "12.16.0";
+const FIREBASE_VERSION = "12.17.1";
+const ACCESS_REFRESH_MS = 30000;
 
 function configIsReady(config) {
   return Boolean(config?.apiKey && config?.authDomain && config?.projectId && config?.appId);
@@ -48,11 +49,13 @@ async function main() {
 
   bridge.setCloudStatus({ configured: true, authResolved: false, status: "checking", message: "Verificando sua sessão" });
 
-  const [{ initializeApp }, authSdk, firestoreSdk, appCheckSdk] = await Promise.all([
+  // Firestore Lite usa chamadas REST simples. Para este app não precisamos do
+  // WebChannel em tempo real no carregamento inicial, o que deixa login e
+  // validação de acesso mais rápidos e evita travas de rede/proxy.
+  const [{ initializeApp }, authSdk, firestoreSdk] = await Promise.all([
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app.js`),
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-auth.js`),
-    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore.js`),
-    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app-check.js`),
+    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore-lite.js`),
   ]);
 
   const {
@@ -62,22 +65,18 @@ async function main() {
     signInWithPopup,
     signOut: firebaseSignOut,
   } = authSdk;
-  const { initializeFirestore, doc, collection, getDoc, getDocs, setDoc, writeBatch, serverTimestamp, onSnapshot } = firestoreSdk;
+  const { getFirestore, doc, collection, getDoc, getDocs, setDoc, writeBatch, serverTimestamp } = firestoreSdk;
 
   const firebaseApp = initializeApp(firebaseConfig);
   if (String(appCheckSiteKey || "").trim()) {
+    const appCheckSdk = await import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app-check.js`);
     appCheckSdk.initializeAppCheck(firebaseApp, {
       provider: new appCheckSdk.ReCaptchaEnterpriseProvider(String(appCheckSiteKey).trim()),
       isTokenAutoRefreshEnabled: true,
     });
   }
   const auth = getAuth(firebaseApp);
-  // Algumas redes, proxies e navegadores móveis interrompem o canal WebChannel
-  // padrão do Firestore. O long polling mantém o acesso estável nesses casos.
-  const db = initializeFirestore(firebaseApp, {
-    experimentalForceLongPolling: true,
-    experimentalLongPollingOptions: { timeoutSeconds: 25 },
-  });
+  const db = getFirestore(firebaseApp);
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
 
@@ -88,7 +87,8 @@ async function main() {
   let knownRemoteWorkoutIds = new Set();
   let queue = Promise.resolve();
   let syncTimer = null;
-  let unsubscribeAccess = null;
+  let accessPollTimer = null;
+  let accessCheckInFlight = false;
   let presenceTimer = null;
   let accessAllowed = false;
   let accessRetryTimer = null;
@@ -108,14 +108,11 @@ async function main() {
   const presenceRef = (uid) => doc(db, "presence", uid);
 
   async function ensureAccessRegistration(user) {
-    // Garante que o Firestore já recebeu a credencial do login Google antes
-    // da primeira leitura, especialmente ao voltar do popup no celular.
-    await user.getIdToken();
     const reference = accessRef(user.uid);
     const snapshot = await getDoc(reference);
     if (snapshot.exists()) {
-      // Contas que ficaram como "aguardando" na versão anterior também são
-      // liberadas nesta migração. Bloqueios manuais não são alterados.
+      // Contas antigas que ficaram como "aguardando" também são liberadas.
+      // Bloqueios manuais (paused/cancelled) nunca são alterados aqui.
       if (snapshot.data()?.status === "pending") {
         await setDoc(reference, {
           email: user.email || "",
@@ -125,13 +122,14 @@ async function main() {
           expiresAt: null,
           updatedAt: serverTimestamp(),
         }, { merge: true });
+        return null; // precisa reler para confirmar a atualização
       }
-      return;
+      return snapshot;
     }
 
-    // Novas contas entram liberadas. Depois disso, apenas a conta
-    // administradora pode alterar este documento para bloquear ou liberar.
-    await setDoc(reference, {
+    // O primeiro login cria access/{uid} automaticamente e já deixa a conta
+    // ativa. Assim ela aparece na Central de Acessos sem cadastro manual.
+    const initialAccess = {
       uid: user.uid,
       email: user.email || "",
       displayName: user.displayName || "",
@@ -141,7 +139,12 @@ async function main() {
       expiresAt: null,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    });
+    };
+    await setDoc(reference, initialAccess);
+    return {
+      exists: () => true,
+      data: () => ({ ...initialAccess, createdAt: null, updatedAt: null }),
+    };
   }
 
   function setStatus(status, message, extra = {}) {
@@ -303,17 +306,16 @@ async function main() {
   }
 
   function startPresence(uid) {
-    stopPresence(false);
+    if (presenceTimer) return;
     const publish = () => updatePresence(document.visibilityState === "visible" && navigator.onLine, uid);
     publish();
     presenceTimer = window.setInterval(publish, 60000);
   }
 
   function stopAccessObserver() {
-    if (typeof unsubscribeAccess === "function") unsubscribeAccess();
-    unsubscribeAccess = null;
-    if (accessRetryTimer) clearTimeout(accessRetryTimer);
-    accessRetryTimer = null;
+    if (accessPollTimer) clearTimeout(accessPollTimer);
+    accessPollTimer = null;
+    accessCheckInFlight = false;
     accessRequestId += 1;
   }
 
@@ -340,85 +342,112 @@ async function main() {
     };
   }
 
-  function scheduleAccessRetry(user, error) {
-    const retryableCodes = ["unavailable", "deadline-exceeded", "internal", "unknown", "resource-exhausted"];
-    const code = String(error?.code || "").replace(/^firestore\//, "");
-    if (!retryableCodes.includes(code) || currentUser?.uid !== user.uid) return;
-    const delay = Math.min(12000, 1500 * (2 ** accessRetryAttempt));
+  function retryDelay() {
+    const delay = Math.min(15000, 1200 * (2 ** accessRetryAttempt));
     accessRetryAttempt += 1;
-    if (accessRetryTimer) clearTimeout(accessRetryTimer);
-    accessRetryTimer = window.setTimeout(() => {
-      accessRetryTimer = null;
-      if (currentUser?.uid === user.uid) observeAccess(user, { quiet: true });
+    return delay;
+  }
+
+  function scheduleAccessCheck(user, delay = ACCESS_REFRESH_MS) {
+    if (currentUser?.uid !== user.uid) return;
+    if (accessPollTimer) clearTimeout(accessPollTimer);
+    accessPollTimer = window.setTimeout(() => {
+      accessPollTimer = null;
+      if (currentUser?.uid === user.uid && document.visibilityState === "visible" && navigator.onLine) {
+        checkAccess(user, { quiet: true, register: false });
+      } else if (currentUser?.uid === user.uid) {
+        scheduleAccessCheck(user, ACCESS_REFRESH_MS);
+      }
     }, delay);
   }
 
-  function attachAccessObserver(user, requestId) {
+  function applyAccess(snapshot, user, requestId) {
     if (currentUser?.uid !== user.uid || requestId !== accessRequestId) return;
-    stopAccessObserver();
-    // stopAccessObserver invalida o identificador anterior; esta observação passa
-    // a usar o novo identificador ativo.
-    const activeRequestId = accessRequestId;
-
-    unsubscribeAccess = onSnapshot(accessRef(user.uid), (snapshot) => {
-      if (currentUser?.uid !== user.uid || activeRequestId !== accessRequestId) return;
-      accessRetryAttempt = 0;
-      const access = normalizeAccess(snapshot);
-      accessAllowed = access.allowed;
-      setStatus(access.allowed ? (hydrated ? "synced" : "syncing") : "blocked", access.allowed ? (hydrated ? "Dados salvos" : "Buscando seus dados") : "Acesso indisponível", {
-        accessResolved: true,
-        access,
-      });
-      if (access.allowed) {
-        startPresence(user.uid);
-        beginHydration(user.uid);
-      } else {
-        stopPresence(true);
-      }
-    }, (error) => {
-      console.error("Firebase access:", error);
-      if (currentUser?.uid !== user.uid || activeRequestId !== accessRequestId) return;
-      accessAllowed = false;
-      stopPresence(false);
-      setStatus("error", "Não foi possível validar seu acesso", {
-        accessResolved: true,
-        access: accessErrorState(error),
-      });
-      scheduleAccessRetry(user, error);
+    accessRetryAttempt = 0;
+    const access = normalizeAccess(snapshot);
+    const wasAllowed = accessAllowed;
+    accessAllowed = access.allowed;
+    setStatus(access.allowed ? (hydrated ? "synced" : "syncing") : "blocked", access.allowed ? (hydrated ? "Dados salvos" : "Buscando seus dados") : "Acesso indisponível", {
+      accessResolved: true,
+      access,
     });
+    if (access.allowed) {
+      startPresence(user.uid);
+      beginHydration(user.uid);
+    } else if (wasAllowed || !hydrated) {
+      stopPresence(true);
+    }
+    scheduleAccessCheck(user);
   }
 
-  function observeAccess(user, { quiet = false } = {}) {
-    stopAccessObserver();
+  async function checkAccess(user, { quiet = false, register = false } = {}) {
+    if (!user || currentUser?.uid !== user.uid || accessCheckInFlight) return;
     const requestId = accessRequestId;
-    accessAllowed = false;
+    accessCheckInFlight = true;
     if (!quiet) {
-      setStatus("checking", "Validando seu acesso", {
+      setStatus("checking", register ? "Preparando seu acesso" : "Validando seu acesso", {
         accessResolved: false,
         access: { status: "checking", allowed: false, plan: "", expiresAt: null, billing: null },
       });
     }
 
-    // Primeiro cria ou confirma o cadastro. Só depois começa a acompanhar o
-    // documento, evitando a disputa que podia deixar a tela presa no erro.
-    ensureAccessRegistration(user).then(() => {
+    try {
+      let snapshot = register ? await ensureAccessRegistration(user) : null;
       if (currentUser?.uid !== user.uid || requestId !== accessRequestId) return;
-      attachAccessObserver(user, requestId);
-    }).catch((error) => {
-      console.error("Firebase registration:", error);
+      if (!snapshot) snapshot = await getDoc(accessRef(user.uid));
       if (currentUser?.uid !== user.uid || requestId !== accessRequestId) return;
-      setStatus("error", "Não foi possível cadastrar seu acesso", {
+
+      // Se a conta foi autenticada mas o documento ainda não existe por alguma
+      // condição de corrida, tenta criá-lo uma última vez e lê novamente.
+      if (!snapshot.exists() && register) {
+        snapshot = await ensureAccessRegistration(user);
+        if (!snapshot) snapshot = await getDoc(accessRef(user.uid));
+      }
+
+      applyAccess(snapshot, user, requestId);
+    } catch (error) {
+      console.error(register ? "Firebase registration:" : "Firebase access:", error);
+      if (currentUser?.uid !== user.uid || requestId !== accessRequestId) return;
+      const code = String(error?.code || "").replace(/^firestore\//, "");
+      const retryable = ["unavailable", "deadline-exceeded", "internal", "unknown", "resource-exhausted"].includes(code);
+
+      // Depois de um acesso já validado, uma oscilação de rede não derruba o app.
+      // Mantemos a última autorização conhecida e tentamos novamente em segundo plano.
+      if (quiet && accessAllowed) {
+        setStatus(navigator.onLine ? "syncing" : "offline", navigator.onLine ? "Reconectando ao Firebase" : "Offline • usando dados deste aparelho", {
+          accessResolved: true,
+        });
+        if (retryable) scheduleAccessCheck(user, retryDelay());
+        else scheduleAccessCheck(user);
+        return;
+      }
+
+      accessAllowed = false;
+      stopPresence(false);
+      setStatus("error", register ? "Não foi possível cadastrar seu acesso" : "Não foi possível validar seu acesso", {
         accessResolved: true,
         access: accessErrorState(error),
       });
-      scheduleAccessRetry(user, error);
-    });
+      if (retryable) scheduleAccessCheck(user, retryDelay());
+    } finally {
+      accessCheckInFlight = false;
+    }
+  }
+
+  function observeAccess(user, { quiet = false } = {}) {
+    if (!user) return;
+    if (!quiet) {
+      stopAccessObserver();
+      // stopAccessObserver avança o identificador e invalida qualquer chamada anterior.
+    }
+    checkAccess(user, { quiet, register: !quiet });
   }
 
   function retryAccess() {
     if (!currentUser) return;
     accessRetryAttempt = 0;
-    observeAccess(currentUser);
+    stopAccessObserver();
+    checkAccess(currentUser, { quiet: false, register: true });
   }
 
   function activateSignedInUser(user) {
@@ -437,8 +466,8 @@ async function main() {
       knownRemoteWorkoutIds = new Set();
       bridge.activateUser(userInfo(user));
       observeAccess(user);
-    } else if (!unsubscribeAccess) {
-      observeAccess(user);
+    } else if (!accessPollTimer && !accessCheckInFlight) {
+      observeAccess(user, { quiet: true });
     }
   }
 
@@ -509,15 +538,21 @@ async function main() {
   });
 
   window.addEventListener("online", () => {
-    if (currentUser && accessAllowed) {
+    if (!currentUser) return;
+    if (accessAllowed) {
       const uid = currentUser.uid;
       updatePresence(document.visibilityState === "visible", uid);
       enqueue(() => hydrated ? pushLocalState(uid) : hydrateFromCloud(uid));
     }
+    checkAccess(currentUser, { quiet: accessAllowed, register: !accessAllowed });
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (currentUser && accessAllowed) updatePresence(document.visibilityState === "visible" && navigator.onLine);
+    if (!currentUser) return;
+    if (accessAllowed) updatePresence(document.visibilityState === "visible" && navigator.onLine);
+    if (document.visibilityState === "visible" && navigator.onLine) {
+      checkAccess(currentUser, { quiet: accessAllowed, register: !accessAllowed });
+    }
   });
 
   window.addEventListener("pagehide", () => {

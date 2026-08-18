@@ -1,6 +1,8 @@
 import { appCheckSiteKey, firebaseConfig } from "../firebase-config.js";
 
-const FIREBASE_VERSION = "12.16.0";
+const FIREBASE_VERSION = "12.17.1";
+const ADMIN_CACHE_KEY = "meutreino:admin-cache:v21";
+const REQUEST_TIMEOUT_MS = 9000;
 const PLAN_NAME = "Meu Treino Pro";
 const PLAN_INSTALLMENTS = 12;
 const PLAN_INSTALLMENT_CENTS = 2999;
@@ -31,6 +33,8 @@ const state = {
   truncated: false,
   refreshTimer: null,
   firestore: null,
+  adminVerified: false,
+  enrichRequestId: 0,
 };
 
 function escapeHtml(value) {
@@ -162,11 +166,82 @@ function formatLastSeen(user) {
 function friendlyError(error) {
   const code = String(error?.code || "");
   if (code.includes("permission-denied")) return "Esta conta não possui permissão para administrar os acessos.";
+  if (code.includes("auth/unauthorized-domain")) return "Autorize este domínio em Firebase Authentication > Settings > Authorized domains.";
+  if (code.includes("auth/popup-blocked")) return "Permita pop-ups para este site e tente novamente.";
   if (code.includes("unauthenticated")) return "Sua sessão expirou. Entre novamente.";
   if (code.includes("failed-precondition")) return error?.message || "Confira os dados e tente novamente.";
   if (code.includes("invalid-argument")) return error?.message || "Os dados enviados são inválidos.";
   if (code.includes("unavailable")) return "O Firebase está indisponível no momento. Tente novamente.";
   return error?.message || "Não foi possível concluir esta ação.";
+}
+
+function withTimeout(promise, timeout = REQUEST_TIMEOUT_MS) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = window.setTimeout(() => {
+        const error = new Error("A conexão com o Firebase demorou mais que o esperado.");
+        error.code = "deadline-exceeded";
+        reject(error);
+      }, timeout);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function readAdminCache(uid) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(ADMIN_CACHE_KEY) || "null");
+    if (!parsed || parsed.uid !== uid || !Array.isArray(parsed.users)) return null;
+    if (Date.now() - Number(parsed.generatedAt || 0) > 24 * 60 * 60 * 1000) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeAdminCache() {
+  if (!state.user?.uid || !state.adminVerified) return;
+  try {
+    localStorage.setItem(ADMIN_CACHE_KEY, JSON.stringify({
+      uid: state.user.uid,
+      generatedAt: state.generatedAt || Date.now(),
+      users: state.users,
+    }));
+  } catch {}
+}
+
+function buildUsers(accessSnapshot, presenceSnapshot = null, notesSnapshot = null, previousUsers = []) {
+  const previousByUid = new Map(previousUsers.map((user) => [user.uid, user]));
+  const presenceByUid = new Map(presenceSnapshot?.docs?.map((item) => [item.id, item.data()]) || []);
+  const notesByUid = new Map(notesSnapshot?.docs?.map((item) => [item.id, item.data()]) || []);
+  const now = Date.now();
+
+  return accessSnapshot.docs.map((item) => {
+    const access = item.data();
+    const presence = presenceByUid.get(item.id) || {};
+    const previous = previousByUid.get(item.id) || {};
+    const status = ["active", "paused", "cancelled", "pending"].includes(access.status) ? access.status : "active";
+    const lastSeenAt = presenceSnapshot ? timestampMillis(presence.lastSeen) : previous.lastSeenAt || null;
+    const online = presenceSnapshot
+      ? Boolean(presence.online && lastSeenAt && now - lastSeenAt <= ONLINE_WINDOW_MS && status === "active")
+      : Boolean(previous.online && previous.lastSeenAt && now - previous.lastSeenAt <= ONLINE_WINDOW_MS && status === "active");
+
+    return {
+      uid: item.id,
+      displayName: String(access.displayName || presence.displayName || previous.displayName || ""),
+      email: String(access.email || presence.email || previous.email || ""),
+      photoURL: String(access.photoURL || presence.photoURL || previous.photoURL || ""),
+      createdAt: timestampMillis(access.createdAt) || previous.createdAt || null,
+      lastSeenAt,
+      online,
+      status,
+      plan: "pro",
+      expiresAt: null,
+      note: notesSnapshot ? String(notesByUid.get(item.id)?.note || "") : String(previous.note || ""),
+      billing: serializeBilling(access.billing),
+    };
+  }).sort((a, b) => Number(b.online) - Number(a.online) || Number(b.lastSeenAt || b.createdAt || 0) - Number(a.lastSeenAt || a.createdAt || 0));
 }
 
 let toastTimer = null;
@@ -312,7 +387,7 @@ function renderDashboard() {
 
       <section class="users-panel">
         <div class="users-head"><span>USUÁRIO</span><span>PRESENÇA</span><span>SITUAÇÃO</span><span>PLANO</span><span style="text-align:right">AÇÕES</span></div>
-        ${visibleUsers.length ? visibleUsers.map(userRow).join("") : '<div class="empty-state"><strong>Nenhum usuário encontrado</strong><span>Ajuste a busca ou o filtro selecionado.</span></div>'}
+        ${visibleUsers.length ? visibleUsers.map(userRow).join("") : '<div class="empty-state"><strong>Nenhum usuário encontrado</strong><span>Novos usuários aparecem aqui automaticamente após o primeiro login com Google.</span></div>'}
       </section>
       ${state.truncated ? '<p class="login-note">A lista atingiu 1.000 contas. Paginação avançada poderá ser adicionada quando necessário.</p>' : ""}
     </div>`;
@@ -533,52 +608,65 @@ async function refreshUsers({ quiet = false } = {}) {
     state.refreshing = true;
     if (state.users.length) render();
   }
+
+  const { db, collection, getDocs } = state.firestore;
+  const accessPromise = withTimeout(getDocs(collection(db, "access")));
+
   try {
-    await state.user.getIdToken();
-    await assertAdmin();
-    const { db, collection, getDocs } = state.firestore;
-    const [accessSnapshot, presenceSnapshot, notesSnapshot] = await Promise.all([
-      getDocs(collection(db, "access")),
-      getDocs(collection(db, "presence")),
-      getDocs(collection(db, "adminNotes")),
-    ]);
-    const presenceByUid = new Map(presenceSnapshot.docs.map((item) => [item.id, item.data()]));
-    const notesByUid = new Map(notesSnapshot.docs.map((item) => [item.id, item.data()]));
-    const now = Date.now();
-    state.users = accessSnapshot.docs.map((item) => {
-      const access = item.data();
-      const presence = presenceByUid.get(item.id) || {};
-      const status = ["active", "paused", "cancelled", "pending"].includes(access.status) ? access.status : "active";
-      const lastSeenAt = timestampMillis(presence.lastSeen);
-      return {
-        uid: item.id,
-        displayName: String(access.displayName || presence.displayName || ""),
-        email: String(access.email || presence.email || ""),
-        photoURL: String(access.photoURL || presence.photoURL || ""),
-        createdAt: timestampMillis(access.createdAt),
-        lastSeenAt,
-        online: Boolean(presence.online && lastSeenAt && now - lastSeenAt <= ONLINE_WINDOW_MS && status === "active"),
-        status,
-        plan: "pro",
-        expiresAt: null,
-        note: String(notesByUid.get(item.id)?.note || ""),
-        billing: serializeBilling(access.billing),
-      };
-    }).sort((a, b) => Number(b.online) - Number(a.online) || Number(b.lastSeenAt || b.createdAt || 0) - Number(a.lastSeenAt || a.createdAt || 0));
-    state.generatedAt = now;
+    if (!state.adminVerified) {
+      await withTimeout(assertAdmin(), 7000);
+      state.adminVerified = true;
+
+      // Depois de validar a conta administradora, mostra o último resultado
+      // imediatamente enquanto a leitura nova termina em segundo plano.
+      const cached = readAdminCache(state.user.uid);
+      if (cached?.users?.length) {
+        state.users = cached.users;
+        state.generatedAt = Number(cached.generatedAt) || Date.now();
+        state.loading = false;
+        render();
+      }
+    }
+
+    const accessSnapshot = await accessPromise;
+    state.users = buildUsers(accessSnapshot, null, null, state.users);
+    state.generatedAt = Date.now();
     state.truncated = false;
     state.denied = false;
     state.error = "";
+    state.loading = false;
+    state.refreshing = false;
+    writeAdminCache();
+    render();
+
+    // Presença e observações não atrasam mais a abertura do painel. Se uma
+    // dessas leituras falhar, a lista principal continua disponível.
+    const enrichRequestId = ++state.enrichRequestId;
+    const userId = state.user.uid;
+    Promise.allSettled([
+      withTimeout(getDocs(collection(db, "presence")), 7000),
+      withTimeout(getDocs(collection(db, "adminNotes")), 7000),
+    ]).then(([presenceResult, notesResult]) => {
+      if (state.user?.uid !== userId || enrichRequestId !== state.enrichRequestId) return;
+      const presenceSnapshot = presenceResult.status === "fulfilled" ? presenceResult.value : null;
+      const notesSnapshot = notesResult.status === "fulfilled" ? notesResult.value : null;
+      if (!presenceSnapshot && !notesSnapshot) return;
+      state.users = buildUsers(accessSnapshot, presenceSnapshot, notesSnapshot, state.users);
+      state.generatedAt = Date.now();
+      writeAdminCache();
+      render();
+    }).catch(() => {});
   } catch (error) {
     console.error("Central de acessos:", error);
     const message = friendlyError(error);
     if (String(error?.code || "").includes("permission-denied")) {
+      state.adminVerified = false;
       state.denied = true;
       state.error = error?.message || message;
+      state.users = [];
     } else if (!quiet) {
       showToast(message, true);
     }
-  } finally {
     state.loading = false;
     state.refreshing = false;
     render();
@@ -734,26 +822,24 @@ async function main() {
     return;
   }
 
-  const [{ initializeApp }, authSdk, firestoreSdk, appCheckSdk] = await Promise.all([
+  // A central só faz leituras e gravações pontuais. Firestore Lite usa REST,
+  // carrega bem menos código e evita o WebChannel que estava deixando o painel
+  // lento ou retornando "unavailable" em algumas redes.
+  const [{ initializeApp }, authSdk, firestoreSdk] = await Promise.all([
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app.js`),
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-auth.js`),
-    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore.js`),
-    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app-check.js`),
+    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore-lite.js`),
   ]);
   const app = initializeApp(firebaseConfig);
   if (String(appCheckSiteKey || "").trim()) {
+    const appCheckSdk = await import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app-check.js`);
     appCheckSdk.initializeAppCheck(app, {
       provider: new appCheckSdk.ReCaptchaEnterpriseProvider(String(appCheckSiteKey).trim()),
       isTokenAutoRefreshEnabled: true,
     });
   }
   const auth = authSdk.getAuth(app);
-  // Usa um transporte compatível com redes que bloqueiam ou armazenam em buffer
-  // o canal padrão do Firestore.
-  const db = firestoreSdk.initializeFirestore(app, {
-    experimentalForceLongPolling: true,
-    experimentalLongPollingOptions: { timeoutSeconds: 25 },
-  });
+  const db = firestoreSdk.getFirestore(app);
   state.auth = {
     instance: auth,
     GoogleAuthProvider: authSdk.GoogleAuthProvider,
@@ -780,6 +866,8 @@ async function main() {
     state.users = [];
     state.denied = false;
     state.error = "";
+    state.adminVerified = false;
+    state.enrichRequestId += 1;
     state.loading = false;
     if (!user) {
       render();
@@ -790,7 +878,7 @@ async function main() {
     await refreshUsers();
     state.refreshTimer = window.setInterval(() => {
       if (document.visibilityState === "visible" && state.user && !state.denied) refreshUsers({ quiet: true });
-    }, 30000);
+    }, 45000);
   });
 }
 
