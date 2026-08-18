@@ -2,6 +2,7 @@ import { appCheckSiteKey, firebaseConfig } from "./firebase-config.js";
 
 const FIREBASE_VERSION = "12.17.1";
 const ACCESS_REFRESH_MS = 30000;
+const FIRESTORE_REQUEST_TIMEOUT_MS = 12000;
 
 function configIsReady(config) {
   return Boolean(config?.apiKey && config?.authDomain && config?.projectId && config?.appId);
@@ -49,13 +50,13 @@ async function main() {
 
   bridge.setCloudStatus({ configured: true, authResolved: false, status: "checking", message: "Verificando sua sessão" });
 
-  // Firestore Lite usa chamadas REST simples. Para este app não precisamos do
-  // WebChannel em tempo real no carregamento inicial, o que deixa login e
-  // validação de acesso mais rápidos e evita travas de rede/proxy.
+  // Usa o módulo oficial de Firestore disponibilizado pelo CDN do Firebase.
+  // O transporte força long-polling para evitar proxies/antivírus que deixam
+  // o WebChannel preso em "unavailable" em algumas redes.
   const [{ initializeApp }, authSdk, firestoreSdk] = await Promise.all([
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app.js`),
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-auth.js`),
-    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore-lite.js`),
+    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore.js`),
   ]);
 
   const {
@@ -65,7 +66,7 @@ async function main() {
     signInWithPopup,
     signOut: firebaseSignOut,
   } = authSdk;
-  const { getFirestore, doc, collection, getDoc, getDocs, setDoc, writeBatch, serverTimestamp } = firestoreSdk;
+  const { initializeFirestore, doc, collection, getDoc, getDocs, setDoc, writeBatch, serverTimestamp } = firestoreSdk;
 
   const firebaseApp = initializeApp(firebaseConfig);
   if (String(appCheckSiteKey || "").trim()) {
@@ -76,7 +77,10 @@ async function main() {
     });
   }
   const auth = getAuth(firebaseApp);
-  const db = getFirestore(firebaseApp);
+  const db = initializeFirestore(firebaseApp, {
+    experimentalForceLongPolling: true,
+    ignoreUndefinedProperties: true,
+  });
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
 
@@ -107,21 +111,35 @@ async function main() {
   const accessRef = (uid) => doc(db, "access", uid);
   const presenceRef = (uid) => doc(db, "presence", uid);
 
+  function withTimeout(promise, timeout = FIRESTORE_REQUEST_TIMEOUT_MS) {
+    let timer;
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = window.setTimeout(() => {
+          const error = new Error("A conexão com o Firestore demorou mais que o esperado.");
+          error.code = "firestore/deadline-exceeded";
+          reject(error);
+        }, timeout);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  }
+
   async function ensureAccessRegistration(user) {
     const reference = accessRef(user.uid);
-    const snapshot = await getDoc(reference);
+    const snapshot = await withTimeout(getDoc(reference));
     if (snapshot.exists()) {
       // Contas antigas que ficaram como "aguardando" também são liberadas.
       // Bloqueios manuais (paused/cancelled) nunca são alterados aqui.
       if (snapshot.data()?.status === "pending") {
-        await setDoc(reference, {
+        await withTimeout(setDoc(reference, {
           email: user.email || "",
           displayName: user.displayName || "",
           photoURL: user.photoURL || "",
           status: "active",
           expiresAt: null,
           updatedAt: serverTimestamp(),
-        }, { merge: true });
+        }, { merge: true }));
         return null; // precisa reler para confirmar a atualização
       }
       return snapshot;
@@ -140,7 +158,7 @@ async function main() {
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
-    await setDoc(reference, initialAccess);
+    await withTimeout(setDoc(reference, initialAccess));
     return {
       exists: () => true,
       data: () => ({ ...initialAccess, createdAt: null, updatedAt: null }),
@@ -339,6 +357,7 @@ async function main() {
       expiresAt: null,
       billing: null,
       errorCode: String(error?.code || "unknown"),
+      errorMessage: String(error?.message || ""),
     };
   }
 
@@ -394,14 +413,14 @@ async function main() {
     try {
       let snapshot = register ? await ensureAccessRegistration(user) : null;
       if (currentUser?.uid !== user.uid || requestId !== accessRequestId) return;
-      if (!snapshot) snapshot = await getDoc(accessRef(user.uid));
+      if (!snapshot) snapshot = await withTimeout(getDoc(accessRef(user.uid)));
       if (currentUser?.uid !== user.uid || requestId !== accessRequestId) return;
 
       // Se a conta foi autenticada mas o documento ainda não existe por alguma
       // condição de corrida, tenta criá-lo uma última vez e lê novamente.
       if (!snapshot.exists() && register) {
         snapshot = await ensureAccessRegistration(user);
-        if (!snapshot) snapshot = await getDoc(accessRef(user.uid));
+        if (!snapshot) snapshot = await withTimeout(getDoc(accessRef(user.uid)));
       }
 
       applyAccess(snapshot, user, requestId);

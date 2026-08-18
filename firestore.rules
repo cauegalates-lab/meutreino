@@ -23,18 +23,8 @@ service cloud.firestore {
 
     function validInitialAccess(userId) {
       return isSelf(userId)
-        && request.resource.data.keys().hasOnly([
-          'uid', 'email', 'displayName', 'photoURL', 'plan', 'status',
-          'expiresAt', 'createdAt', 'updatedAt'
-        ])
         && request.resource.data.uid == userId
         && request.resource.data.email == request.auth.token.email
-        && request.resource.data.email is string
-        && request.resource.data.email.size() <= 320
-        && request.resource.data.displayName is string
-        && request.resource.data.displayName.size() <= 100
-        && request.resource.data.photoURL is string
-        && request.resource.data.photoURL.size() <= 2048
         && request.resource.data.plan == 'pro'
         && request.resource.data.status == 'active'
         && request.resource.data.expiresAt == null

@@ -1,7 +1,7 @@
 import { appCheckSiteKey, firebaseConfig } from "../firebase-config.js";
 
 const FIREBASE_VERSION = "12.17.1";
-const ADMIN_CACHE_KEY = "meutreino:admin-cache:v21";
+const ADMIN_CACHE_KEY = "meutreino:admin-cache:v22";
 const REQUEST_TIMEOUT_MS = 9000;
 const PLAN_NAME = "Meu Treino Pro";
 const PLAN_INSTALLMENTS = 12;
@@ -165,7 +165,7 @@ function formatLastSeen(user) {
 
 function friendlyError(error) {
   const code = String(error?.code || "");
-  if (code.includes("permission-denied")) return "Esta conta não possui permissão para administrar os acessos.";
+  if (code.includes("permission-denied")) return "O Firestore negou a operação. Confirme se sua conta está em admins e se as regras firestore.rules da versão atual foram publicadas.";
   if (code.includes("auth/unauthorized-domain")) return "Autorize este domínio em Firebase Authentication > Settings > Authorized domains.";
   if (code.includes("auth/popup-blocked")) return "Permita pop-ups para este site e tente novamente.";
   if (code.includes("unauthenticated")) return "Sua sessão expirou. Entre novamente.";
@@ -822,13 +822,12 @@ async function main() {
     return;
   }
 
-  // A central só faz leituras e gravações pontuais. Firestore Lite usa REST,
-  // carrega bem menos código e evita o WebChannel que estava deixando o painel
-  // lento ou retornando "unavailable" em algumas redes.
+  // Usa o módulo oficial do Firestore disponibilizado pelo CDN do Firebase.
+  // Long-polling evita travas de WebChannel em redes/proxies problemáticos.
   const [{ initializeApp }, authSdk, firestoreSdk] = await Promise.all([
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app.js`),
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-auth.js`),
-    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore-lite.js`),
+    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore.js`),
   ]);
   const app = initializeApp(firebaseConfig);
   if (String(appCheckSiteKey || "").trim()) {
@@ -839,7 +838,10 @@ async function main() {
     });
   }
   const auth = authSdk.getAuth(app);
-  const db = firestoreSdk.getFirestore(app);
+  const db = firestoreSdk.initializeFirestore(app, {
+    experimentalForceLongPolling: true,
+    ignoreUndefinedProperties: true,
+  });
   state.auth = {
     instance: auth,
     GoogleAuthProvider: authSdk.GoogleAuthProvider,

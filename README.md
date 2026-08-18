@@ -99,13 +99,15 @@ A coleção `admins` é a única criada manualmente, uma vez, para cadastrar sua
 O controle das 12 parcelas de R$ 29,99 continua manual. A central pode criar as parcelas e marcar cada uma como paga ou pendente. Os campos `pixCode` e `qrCodeUrl` ficam vazios até você definir o recebimento; o Firebase não cobra nem confirma pagamentos sozinho.
 
 
-### Ajustes de estabilidade desta versão
+### Ajustes de estabilidade desta versão (v22)
 
-- Login e cadastro de acesso usam Firestore Lite (REST), evitando a conexão WebChannel que podia retornar `unavailable`.
+- Login e cadastro de acesso usam o módulo oficial `firebase-firestore.js` do CDN, com long-polling forçado para evitar redes/proxies que prendem o WebChannel em `unavailable`.
 - O painel administrativo carrega primeiro a lista de acessos e busca presença/observações em segundo plano.
 - A central mantém um cache local do último resultado depois de confirmar a conta administradora, deixando reaberturas mais rápidas.
 - O App Check só é carregado se uma chave tiver sido configurada.
-- Cache do PWA atualizado para a versão 21 para impedir que o navegador continue usando os scripts antigos.
+- Cache do PWA atualizado para a versão 22 para impedir que o navegador continue usando scripts antigos.
+- A tela de acesso agora exibe o código real do erro (`permission-denied`, `unavailable`, etc.), facilitando identificar configuração do Firebase.
+- Incluído `PUBLICAR_REGRAS_FIRESTORE.bat` para Windows; ele publica apenas `firestore.rules` no projeto correto.
 
 ## Observações importantes
 
