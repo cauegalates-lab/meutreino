@@ -2,7 +2,7 @@ import { appCheckSiteKey, firebaseConfig } from "./firebase-config.js";
 
 const FIREBASE_VERSION = "12.17.1";
 const ACCESS_REFRESH_MS = 30000;
-const FIRESTORE_REQUEST_TIMEOUT_MS = 12000;
+const FIRESTORE_REQUEST_TIMEOUT_MS = 20000;
 
 function configIsReady(config) {
   return Boolean(config?.apiKey && config?.authDomain && config?.projectId && config?.appId);
@@ -56,7 +56,7 @@ async function main() {
   const [{ initializeApp }, authSdk, firestoreSdk] = await Promise.all([
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app.js`),
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-auth.js`),
-    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore.js`),
+    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore-lite.js`),
   ]);
 
   const {
@@ -77,10 +77,9 @@ async function main() {
     });
   }
   const auth = getAuth(firebaseApp);
-  const db = initializeFirestore(firebaseApp, {
-    experimentalForceLongPolling: true,
-    ignoreUndefinedProperties: true,
-  });
+  // Firestore Lite usa REST puro e evita o WebChannel que estava travando
+  // antes da validação de acesso em algumas redes/navegadores.
+  const db = initializeFirestore(firebaseApp, { ignoreUndefinedProperties: true });
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
 
@@ -118,7 +117,7 @@ async function main() {
       new Promise((_, reject) => {
         timer = window.setTimeout(() => {
           const error = new Error("A conexão com o Firestore demorou mais que o esperado.");
-          error.code = "firestore/deadline-exceeded";
+          error.code = "firestore/client-timeout";
           reject(error);
         }, timeout);
       }),
@@ -428,7 +427,7 @@ async function main() {
       console.error(register ? "Firebase registration:" : "Firebase access:", error);
       if (currentUser?.uid !== user.uid || requestId !== accessRequestId) return;
       const code = String(error?.code || "").replace(/^firestore\//, "");
-      const retryable = ["unavailable", "deadline-exceeded", "internal", "unknown", "resource-exhausted"].includes(code);
+      const retryable = ["unavailable", "deadline-exceeded", "client-timeout", "internal", "unknown", "resource-exhausted"].includes(code);
 
       // Depois de um acesso já validado, uma oscilação de rede não derruba o app.
       // Mantemos a última autorização conhecida e tentamos novamente em segundo plano.

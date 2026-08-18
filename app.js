@@ -782,7 +782,7 @@ function renderAccessScreen() {
       const code = String(access.errorCode || "").replace(/^firestore\//, "");
       if (code === "permission-denied") return "O Firestore recusou a criação do acesso. Publique o arquivo firestore.rules desta versão no Firebase.";
       if (code === "not-found") return "O banco Firestore padrão não foi encontrado neste projeto Firebase.";
-      if (code === "unavailable" || code === "deadline-exceeded") return "Não foi possível conectar ao Firestore. Confira sua internet e tente novamente.";
+      if (code === "unavailable" || code === "deadline-exceeded" || code === "client-timeout") return "Não foi possível conectar ao Firestore. Confira sua internet e tente novamente.";
       return "Não foi possível consultar seu cadastro no Firestore. Tente novamente.";
     })()],
   }[access.status] || ["Acesso indisponível", "Esta conta ainda não possui acesso ao aplicativo."];

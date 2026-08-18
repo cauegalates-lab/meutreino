@@ -99,9 +99,10 @@ A coleção `admins` é a única criada manualmente, uma vez, para cadastrar sua
 O controle das 12 parcelas de R$ 29,99 continua manual. A central pode criar as parcelas e marcar cada uma como paga ou pendente. Os campos `pixCode` e `qrCodeUrl` ficam vazios até você definir o recebimento; o Firebase não cobra nem confirma pagamentos sozinho.
 
 
-### Ajustes de estabilidade desta versão (v22)
+### Ajustes de estabilidade desta versão (v23)
 
-- Login e cadastro de acesso usam o módulo oficial `firebase-firestore.js` do CDN, com long-polling forçado para evitar redes/proxies que prendem o WebChannel em `unavailable`.
+- Login, acesso e painel administrativo usam o módulo oficial `firebase-firestore-lite.js` do CDN. Ele é REST-only e evita o WebChannel que estava travando a validação em algumas redes.
+- O limite local de espera foi aumentado e agora usa `client-timeout`, sem mascarar o problema como um erro nativo `deadline-exceeded` do Firebase.
 - O painel administrativo carrega primeiro a lista de acessos e busca presença/observações em segundo plano.
 - A central mantém um cache local do último resultado depois de confirmar a conta administradora, deixando reaberturas mais rápidas.
 - O App Check só é carregado se uma chave tiver sido configurada.

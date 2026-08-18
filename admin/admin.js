@@ -1,8 +1,8 @@
 import { appCheckSiteKey, firebaseConfig } from "../firebase-config.js";
 
 const FIREBASE_VERSION = "12.17.1";
-const ADMIN_CACHE_KEY = "meutreino:admin-cache:v22";
-const REQUEST_TIMEOUT_MS = 9000;
+const ADMIN_CACHE_KEY = "meutreino:admin-cache:v23";
+const REQUEST_TIMEOUT_MS = 20000;
 const PLAN_NAME = "Meu Treino Pro";
 const PLAN_INSTALLMENTS = 12;
 const PLAN_INSTALLMENT_CENTS = 2999;
@@ -171,6 +171,7 @@ function friendlyError(error) {
   if (code.includes("unauthenticated")) return "Sua sessão expirou. Entre novamente.";
   if (code.includes("failed-precondition")) return error?.message || "Confira os dados e tente novamente.";
   if (code.includes("invalid-argument")) return error?.message || "Os dados enviados são inválidos.";
+  if (code.includes("client-timeout")) return "A conexão com o Firestore não respondeu. Atualize a página e tente novamente.";
   if (code.includes("unavailable")) return "O Firebase está indisponível no momento. Tente novamente.";
   return error?.message || "Não foi possível concluir esta ação.";
 }
@@ -182,7 +183,7 @@ function withTimeout(promise, timeout = REQUEST_TIMEOUT_MS) {
     new Promise((_, reject) => {
       timer = window.setTimeout(() => {
         const error = new Error("A conexão com o Firebase demorou mais que o esperado.");
-        error.code = "deadline-exceeded";
+        error.code = "firestore/client-timeout";
         reject(error);
       }, timeout);
     }),
@@ -827,7 +828,7 @@ async function main() {
   const [{ initializeApp }, authSdk, firestoreSdk] = await Promise.all([
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app.js`),
     import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-auth.js`),
-    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore.js`),
+    import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore-lite.js`),
   ]);
   const app = initializeApp(firebaseConfig);
   if (String(appCheckSiteKey || "").trim()) {
@@ -838,10 +839,9 @@ async function main() {
     });
   }
   const auth = authSdk.getAuth(app);
-  const db = firestoreSdk.initializeFirestore(app, {
-    experimentalForceLongPolling: true,
-    ignoreUndefinedProperties: true,
-  });
+  // Firestore Lite usa REST puro e carrega bem mais rápido para este painel,
+  // que só precisa de leituras/escritas pontuais.
+  const db = firestoreSdk.initializeFirestore(app, { ignoreUndefinedProperties: true });
   state.auth = {
     instance: auth,
     GoogleAuthProvider: authSdk.GoogleAuthProvider,
