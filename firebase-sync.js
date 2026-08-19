@@ -1,4 +1,4 @@
-import { appCheckSiteKey, firebaseConfig } from "./firebase-config.js";
+import { appCheckSiteKey, firebaseConfig, firestoreDatabaseId } from "./firebase-config.js";
 
 const FIREBASE_VERSION = "12.17.1";
 const ACCESS_REFRESH_MS = 30000;
@@ -79,7 +79,11 @@ async function main() {
   const auth = getAuth(firebaseApp);
   // Firestore Lite usa REST puro e evita o WebChannel que estava travando
   // antes da validação de acesso em algumas redes/navegadores.
-  const db = initializeFirestore(firebaseApp, { ignoreUndefinedProperties: true });
+  const databaseId = String(firestoreDatabaseId || "(default)").trim() || "(default)";
+  const firestoreSettings = { ignoreUndefinedProperties: true };
+  const db = databaseId === "(default)"
+    ? initializeFirestore(firebaseApp, firestoreSettings)
+    : initializeFirestore(firebaseApp, firestoreSettings, databaseId);
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
 

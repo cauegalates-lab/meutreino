@@ -1,4 +1,4 @@
-import { appCheckSiteKey, firebaseConfig } from "../firebase-config.js";
+import { appCheckSiteKey, firebaseConfig, firestoreDatabaseId } from "../firebase-config.js";
 
 const FIREBASE_VERSION = "12.17.1";
 const ADMIN_CACHE_KEY = "meutreino:admin-cache:v23";
@@ -166,6 +166,7 @@ function formatLastSeen(user) {
 function friendlyError(error) {
   const code = String(error?.code || "");
   if (code.includes("permission-denied")) return "O Firestore negou a operação. Confirme se sua conta está em admins e se as regras firestore.rules da versão atual foram publicadas.";
+  if (code.includes("not-found")) return `O banco Firestore ${firestoreDatabaseId || "(default)"} não foi encontrado. Crie o banco com esse Database ID no projeto Firebase treino-346bb.`;
   if (code.includes("auth/unauthorized-domain")) return "Autorize este domínio em Firebase Authentication > Settings > Authorized domains.";
   if (code.includes("auth/popup-blocked")) return "Permita pop-ups para este site e tente novamente.";
   if (code.includes("unauthenticated")) return "Sua sessão expirou. Entre novamente.";
@@ -841,7 +842,11 @@ async function main() {
   const auth = authSdk.getAuth(app);
   // Firestore Lite usa REST puro e carrega bem mais rápido para este painel,
   // que só precisa de leituras/escritas pontuais.
-  const db = firestoreSdk.initializeFirestore(app, { ignoreUndefinedProperties: true });
+  const databaseId = String(firestoreDatabaseId || "(default)").trim() || "(default)";
+  const firestoreSettings = { ignoreUndefinedProperties: true };
+  const db = databaseId === "(default)"
+    ? firestoreSdk.initializeFirestore(app, firestoreSettings)
+    : firestoreSdk.initializeFirestore(app, firestoreSettings, databaseId);
   state.auth = {
     instance: auth,
     GoogleAuthProvider: authSdk.GoogleAuthProvider,

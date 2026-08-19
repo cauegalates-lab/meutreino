@@ -1,0 +1,28 @@
+MEU TREINO — O QUE FAZER DEPOIS DE PUBLICAR
+
+1) FIREBASE
+- Abra o projeto: treino-346bb
+- Vá em Firestore Database.
+- O Database ID precisa ser: (default)
+- Se ainda não existir um banco, crie o Cloud Firestore em modo de produção e mantenha o ID (default).
+
+2) REGRAS DO FIRESTORE
+- Abra Firestore Database > Rules.
+- Copie todo o conteúdo do arquivo firestore.rules deste projeto.
+- Cole nas regras do Firebase e clique em Publish.
+
+3) VERCEL / GITHUB
+- Substitua os arquivos do projeto pelos arquivos desta versão.
+- Faça commit/push no GitHub.
+- Aguarde a Vercel concluir o novo deploy.
+
+4) TESTE
+- Abra o site publicado.
+- Atualize a página uma vez.
+- Entre com Google.
+- No primeiro login, o app deve criar access/{UID} automaticamente com status active.
+- Depois disso, a tela de treinos deve abrir.
+
+5) SE AINDA APARECER not-found
+- O banco (default) ainda não foi criado no projeto treino-346bb OU o deploy ainda está usando uma versão antiga.
+- Confirme o Database ID no Firebase e faça um novo deploy na Vercel.

@@ -50,9 +50,11 @@ Esta versão usa somente **Firebase Authentication + Cloud Firestore** e funcion
 1. No Firebase Console, mantenha o projeto no plano **Spark**.
 2. Em **Authentication > Sign-in method**, habilite o Google.
 3. Em **Authentication > Settings > Authorized domains**, adicione o domínio publicado na Vercel.
-4. Em **Firestore Database**, crie o banco em modo de produção.
-5. Abra a aba **Rules**, substitua o conteúdo pelo arquivo `firestore.rules` e clique em **Publish**.
-6. Publique o site novamente na Vercel.
+4. Em **Firestore Database**, crie o banco em modo de produção usando o **Database ID `(default)`**.
+5. Confirme que no topo do Firestore aparece **`(default)`**. O app e o painel admin usam esse mesmo banco, configurado em `firebase-config.js`.
+6. Abra a aba **Rules**, substitua o conteúdo pelo arquivo `firestore.rules` e clique em **Publish**.
+7. Publique o site novamente na Vercel.
+8. Depois da nova publicação, atualize a página uma vez. O cache PWA desta versão foi alterado para forçar a troca dos scripts antigos.
 
 Também é possível publicar as regras pelo terminal, sem contratar o plano pago:
 
@@ -99,14 +101,15 @@ A coleção `admins` é a única criada manualmente, uma vez, para cadastrar sua
 O controle das 12 parcelas de R$ 29,99 continua manual. A central pode criar as parcelas e marcar cada uma como paga ou pendente. Os campos `pixCode` e `qrCodeUrl` ficam vazios até você definir o recebimento; o Firebase não cobra nem confirma pagamentos sozinho.
 
 
-### Ajustes de estabilidade desta versão (v23)
+### Ajustes de estabilidade desta versão (v24)
 
 - Login, acesso e painel administrativo usam o módulo oficial `firebase-firestore-lite.js` do CDN. Ele é REST-only e evita o WebChannel que estava travando a validação em algumas redes.
 - O limite local de espera foi aumentado e agora usa `client-timeout`, sem mascarar o problema como um erro nativo `deadline-exceeded` do Firebase.
 - O painel administrativo carrega primeiro a lista de acessos e busca presença/observações em segundo plano.
 - A central mantém um cache local do último resultado depois de confirmar a conta administradora, deixando reaberturas mais rápidas.
 - O App Check só é carregado se uma chave tiver sido configurada.
-- Cache do PWA atualizado para a versão 22 para impedir que o navegador continue usando scripts antigos.
+- Cache do PWA atualizado novamente para impedir que o navegador continue usando scripts antigos.
+- App e painel admin agora usam explicitamente o Database ID `(default)` via `firebase-config.js`, evitando divergência entre as duas áreas.
 - A tela de acesso agora exibe o código real do erro (`permission-denied`, `unavailable`, etc.), facilitando identificar configuração do Firebase.
 - Incluído `PUBLICAR_REGRAS_FIRESTORE.bat` para Windows; ele publica apenas `firestore.rules` no projeto correto.
 

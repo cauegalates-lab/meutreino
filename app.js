@@ -781,7 +781,7 @@ function renderAccessScreen() {
     error: ["Não foi possível validar o acesso", (() => {
       const code = String(access.errorCode || "").replace(/^firestore\//, "");
       if (code === "permission-denied") return "O Firestore recusou a criação do acesso. Publique o arquivo firestore.rules desta versão no Firebase.";
-      if (code === "not-found") return "O banco Firestore padrão não foi encontrado neste projeto Firebase.";
+      if (code === "not-found") return "O banco Firestore (default) não existe no projeto treino-346bb. Crie o banco padrão no Firebase e toque em Tentar novamente.";
       if (code === "unavailable" || code === "deadline-exceeded" || code === "client-timeout") return "Não foi possível conectar ao Firestore. Confira sua internet e tente novamente.";
       return "Não foi possível consultar seu cadastro no Firestore. Tente novamente.";
     })()],
