@@ -1,0 +1,185 @@
+MEU TREINO — PASSO A PASSO FINAL (v26)
+=======================================
+
+O QUE JÁ ESTÁ CORRIGIDO NESTA VERSÃO
+-------------------------------------
+1. O projeto inteiro usa o Firestore Database ID: default
+   IMPORTANTE: é "default" SEM parênteses.
+
+2. O painel admin aceita o cadastro que você já possui:
+   coleção: admin
+   documento: SEU_UID
+   campo: valor = true
+
+   Também continua compatível com:
+   coleção: admins
+   documento: SEU_UID
+   campo: enabled = true
+
+   NÃO precisa criar os dois. O seu admin/UID com valor=true é suficiente.
+
+3. Foi corrigida a causa do erro "Missing or insufficient permissions" no painel:
+   as regras agora permitem que a conta autenticada leia o próprio documento
+   admin/{UID} para comprovar que valor=true.
+
+4. Financeiro centralizado:
+   - 12 parcelas;
+   - R$ 29,90 por parcela;
+   - sem valor total no card do plano;
+   - QR Code/Pix separado da regra financeira;
+   - datas de vencimento calculadas a cada 30 dias.
+
+5. Data-base:
+   - antes do primeiro pagamento: vencimento = A definir;
+   - quando a parcela 1 é marcada como paga, o sistema registra a data atual;
+   - parcela 2 vence 30 dias depois;
+   - parcela 3 vence 60 dias depois;
+   - e assim sucessivamente até a parcela 12.
+
+6. Visual:
+   - menos cards soltos;
+   - bordas mais discretas;
+   - menos sombras;
+   - financeiro integrado ao fundo da página;
+   - parcelas em lista contínua, sem um card grande envolvendo tudo.
+
+
+O QUE VOCÊ PRECISA FAZER AGORA
+------------------------------
+
+PASSO 1 — NÃO CRIE OUTRO FIRESTORE
+No Firebase Console, abra o projeto treino-346bb.
+Entre em Firestore Database e mantenha selecionado o banco:
+
+    default
+
+SEM parênteses.
+Não altere para (default).
+
+
+PASSO 2 — PUBLIQUE AS REGRAS DESTA VERSÃO
+Esse passo é OBRIGATÓRIO para o painel admin deixar de dar
+"Missing or insufficient permissions".
+
+No Firebase Console:
+1. Firestore Database.
+2. Confirme que o banco selecionado no topo é "default".
+3. Abra a aba Segurança / Rules.
+4. Abra o arquivo firestore.rules desta pasta.
+5. Copie TODO o conteúdo.
+6. Substitua as regras que estão no Firebase.
+7. Clique em Publicar.
+
+Não use regras antigas de outra versão.
+
+
+PASSO 3 — CONFIRA O SEU ADMIN
+No banco "default", confira:
+
+    admin
+      └── SEU_UID
+            └── valor: true
+
+O ID do documento precisa ser exatamente o UID da MESMA conta Google
+usada para entrar no /admin/.
+
+Você NÃO precisa criar admins/{UID} se admin/{UID} com valor=true já existe.
+
+
+PASSO 4 — SUBSTITUA O PROJETO NO GITHUB
+Faça backup da versão atual, se desejar.
+Depois substitua os arquivos do projeto pelos arquivos desta versão.
+
+Não esqueça principalmente destes arquivos novos/alterados:
+- billing.js
+- app.js
+- firebase-sync.js
+- firebase-config.js
+- styles.css
+- index.html
+- service-worker.js
+- firestore.rules
+- admin/admin.js
+- admin/admin.css
+- admin/index.html
+
+Se você usa a pasta functions, mantenha também:
+- functions/index.js
+- functions/billing.js
+
+Faça commit e push normalmente.
+
+
+PASSO 5 — AGUARDE O DEPLOY DA VERCEL
+Espere o deploy terminar completamente antes de testar.
+
+
+PASSO 6 — TESTE SEM CACHE ANTIGO
+Como o app é PWA, um navegador que já abriu versões antigas pode manter arquivos em cache.
+
+Primeiro teste em uma janela anônima/privada.
+Depois, no navegador principal, faça uma atualização forçada ou limpe os dados do site
+caso ele ainda mostre a versão antiga.
+
+O service worker desta versão usa cache v26.
+
+
+PASSO 7 — TESTE O APLICATIVO NORMAL
+1. Abra a página principal.
+2. Entre com uma conta Google liberada.
+3. Abra Treinos.
+4. Crie/edite um treino.
+5. Feche e abra novamente para confirmar a sincronização.
+6. Abra Meu Perfil > Financeiro.
+
+No Financeiro deve aparecer:
+
+    12 parcelas de R$ 29,90
+
+Não deve aparecer o valor total.
+Antes do primeiro pagamento, os vencimentos ficam como "A definir".
+
+
+PASSO 8 — TESTE O PAINEL ADMIN
+1. Abra /admin/ em janela anônima.
+2. Entre com a conta cujo UID está em admin/{UID} com valor=true.
+3. O painel deve abrir a lista de usuários.
+4. Abra Financeiro em um usuário.
+
+Se aparecer "Missing or insufficient permissions", a primeira coisa a conferir é:
+- as regras NOVAS foram realmente publicadas no banco "default"?
+- o UID do documento admin é exatamente o UID da conta que entrou?
+- o campo valor é booleano true, e não o texto "true"?
+
+
+PASSO 9 — TESTE A REGRA DAS PARCELAS
+Em um usuário com parcelamento:
+1. Antes da parcela 1 paga, confirme que as datas estão "A definir".
+2. Marque a parcela 1 como paga.
+3. Confira se a data-base passa a ser a data atual.
+4. Confira se a parcela 2 fica 30 dias depois.
+5. Confira se a parcela 3 fica 60 dias depois.
+6. Confira as demais parcelas.
+7. Marque e reabra uma parcela posterior para confirmar o status.
+
+O sistema impede marcar parcela 2 a 12 como paga antes da parcela 1,
+pois ainda não existiria uma data-base confiável.
+
+
+PASSO 10 — QR CODE
+Nenhuma mudança adicional é necessária agora.
+Os campos de Pix/QR Code continuam preservados e independentes do vencimento.
+Você pode ajustar essa parte depois.
+
+
+O QUE NÃO FOI ALTERADO
+----------------------
+- login Google;
+- dados dos treinos;
+- estrutura principal de sincronização;
+- navegação normal do aplicativo;
+- QR Code/Pix já existente;
+- identidade visual verde/escura do projeto.
+
+A refatoração foi feita para mudar a regra financeira, corrigir o admin e suavizar
+a interface sem criar uma segunda implementação paralela do aplicativo.

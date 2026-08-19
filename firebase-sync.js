@@ -1,5 +1,8 @@
 import { appCheckSiteKey, firebaseConfig, firestoreDatabaseId } from "./firebase-config.js";
 
+const BILLING = globalThis.MeuTreinoBilling;
+if (!BILLING) throw new Error("Módulo financeiro não carregado.");
+
 const FIREBASE_VERSION = "12.17.1";
 const ACCESS_REFRESH_MS = 30000;
 const FIRESTORE_REQUEST_TIMEOUT_MS = 20000;
@@ -264,30 +267,12 @@ async function main() {
   }
 
   function timestampMillis(value) {
-    if (!value) return null;
-    if (typeof value.toMillis === "function") return value.toMillis();
-    const numeric = Number(value);
-    return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    return BILLING.toMillis(value);
   }
 
   function normalizeBilling(value) {
     if (!value || !Array.isArray(value.installments)) return null;
-    return {
-      plan: "pro",
-      planName: "Meu Treino Pro",
-      amountCents: 2999,
-      totalInstallments: 12,
-      startedAt: timestampMillis(value.startedAt),
-      installments: value.installments.slice(0, 12).map((installment, index) => ({
-        number: Number(installment?.number) || index + 1,
-        amountCents: Number(installment?.amountCents) || 2999,
-        dueAt: timestampMillis(installment?.dueAt),
-        status: installment?.status === "paid" ? "paid" : "pending",
-        paidAt: timestampMillis(installment?.paidAt),
-        pixCode: String(installment?.pixCode || ""),
-        qrCodeUrl: String(installment?.qrCodeUrl || ""),
-      })),
-    };
+    return BILLING.normalizeSchedule(value);
   }
 
   function normalizeAccess(snapshot) {

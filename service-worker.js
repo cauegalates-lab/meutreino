@@ -1,5 +1,5 @@
-const CACHE = "meu-treino-v25-named-default";
-const ASSETS = ["./","./index.html","./styles.css","./app.js","./firebase-sync.js","./firebase-config.js","./manifest.webmanifest","./admin/","./admin/index.html","./admin/admin.css","./admin/admin.js","./assets/icon.svg","./assets/icon-192.png","./assets/icon-512.png","./assets/apple-touch-icon.png","./assets/hero-costas.png"];
+const CACHE = "meu-treino-v26-refactor-financial-admin";
+const ASSETS = ["./","./index.html","./styles.css","./app.js","./billing.js","./firebase-sync.js","./firebase-config.js","./manifest.webmanifest","./admin/","./admin/index.html","./admin/admin.css","./admin/admin.js","./assets/icon.svg","./assets/icon-192.png","./assets/icon-512.png","./assets/apple-touch-icon.png","./assets/hero-costas.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)));

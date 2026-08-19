@@ -5,9 +5,9 @@ const SYNC_META_KEY = "meu-treino-sync-meta-v1";
 const LOCAL_OWNER_KEY = "meu-treino-owner-v1";
 const INSTALL_ONBOARDING_KEY = "meu-treino-install-onboarding-v1";
 const DATA_SCHEMA_VERSION = 2;
-const PLAN_NAME = "Meu Treino Pro";
-const PLAN_INSTALLMENTS = 12;
-const PLAN_INSTALLMENT_CENTS = 2999;
+const BILLING = globalThis.MeuTreinoBilling;
+if (!BILLING) throw new Error("Módulo financeiro não carregado.");
+const { PLAN_NAME, PLAN_INSTALLMENTS, PLAN_INSTALLMENT_CENTS, INSTALLMENT_INTERVAL_DAYS } = BILLING;
 const WEEK_DAYS = ["SEG", "TER", "QUA", "QUI", "SEX", "SÁB", "DOM"];
 const DEFAULT_TRAINING_DAYS = ["SEG", "TER", "QUA", "QUI", "SEX", "SÁB"];
 const USER_AGENT = navigator.userAgent || "";
@@ -556,35 +556,8 @@ function formatCurrency(cents = 0) {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format((Number(cents) || 0) / 100);
 }
 
-function defaultBilling() {
-  return {
-    plan: "pro",
-    planName: PLAN_NAME,
-    amountCents: PLAN_INSTALLMENT_CENTS,
-    totalInstallments: PLAN_INSTALLMENTS,
-    startedAt: null,
-    installments: Array.from({ length: PLAN_INSTALLMENTS }, (_, index) => ({
-      number: index + 1,
-      amountCents: PLAN_INSTALLMENT_CENTS,
-      dueAt: null,
-      status: "pending",
-      paidAt: null,
-      pixCode: "",
-      qrCodeUrl: "",
-    })),
-  };
-}
-
 function currentBilling() {
-  const fallback = defaultBilling();
-  const billing = state.cloud.access?.billing;
-  if (!billing || !Array.isArray(billing.installments) || !billing.installments.length) return fallback;
-  return {
-    ...fallback,
-    ...billing,
-    planName: PLAN_NAME,
-    installments: fallback.installments.map((base, index) => ({ ...base, ...(billing.installments[index] || {}) })),
-  };
+  return BILLING.normalizeSchedule(state.cloud.access?.billing);
 }
 
 function paymentState(installment) {
@@ -1017,7 +990,6 @@ function showFinancialArea() {
   const billing = currentBilling();
   const paid = billing.installments.filter((installment) => installment.status === "paid").length;
   const percentage = Math.round((paid / PLAN_INSTALLMENTS) * 100);
-  const total = formatCurrency(PLAN_INSTALLMENTS * PLAN_INSTALLMENT_CENTS);
   const rows = billing.installments.map((installment) => {
     const status = paymentState(installment);
     const labels = { paid: "Paga", pending: "Aguardando", overdue: "Vencida" };
@@ -1028,14 +1000,18 @@ function showFinancialArea() {
       ${icon("chevron")}
     </button>`;
   }).join("");
+  const scheduleCopy = billing.firstPaymentAt
+    ? `Vencimentos calculados a cada ${INSTALLMENT_INTERVAL_DAYS} dias desde ${formatPaymentDate(billing.firstPaymentAt)}.`
+    : `A data-base será registrada no primeiro pagamento; as demais vencem a cada ${INSTALLMENT_INTERVAL_DAYS} dias.`;
 
   overlayRoot.innerHTML = `<div class="modal-backdrop builder-backdrop financial-backdrop"><section class="builder-modal financial-modal" role="dialog" aria-modal="true" aria-label="Financeiro"><button class="modal-close" data-action="close-modal" aria-label="Fechar">×</button><p class="eyebrow">SUA ASSINATURA</p><h2>Financeiro</h2><p>Acompanhe as parcelas do seu acesso ao ${PLAN_NAME}.</p>
     <section class="subscription-card">
-      <div><span>PLANO ÚNICO</span><h3>${PLAN_NAME}</h3><p>12 parcelas de ${formatCurrency(PLAN_INSTALLMENT_CENTS)} • Total ${total}</p></div>
+      <div><span>PLANO ÚNICO</span><h3>${PLAN_NAME}</h3><p>${PLAN_INSTALLMENTS} parcelas de ${formatCurrency(PLAN_INSTALLMENT_CENTS)}</p></div>
       <strong>${paid}/${PLAN_INSTALLMENTS}</strong>
       <div class="subscription-progress"><i style="width:${percentage}%"></i></div>
     </section>
     <div class="financial-heading"><strong>Parcelas</strong><span>${paid} ${paid === 1 ? "paga" : "pagas"}</span></div>
+    <p class="financial-schedule-note">${escapeHtml(scheduleCopy)}</p>
     <div class="financial-list">${rows}</div>
     <div class="settings-note">${icon("lock")} Os códigos de pagamento só aparecem quando estiverem vinculados à sua conta.</div>
   </section></div>`;

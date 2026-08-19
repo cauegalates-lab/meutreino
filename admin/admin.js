@@ -1,11 +1,12 @@
 import { appCheckSiteKey, firebaseConfig, firestoreDatabaseId } from "../firebase-config.js";
 
+const BILLING = globalThis.MeuTreinoBilling;
+if (!BILLING) throw new Error("Módulo financeiro não carregado.");
+
 const FIREBASE_VERSION = "12.17.1";
-const ADMIN_CACHE_KEY = "meutreino:admin-cache:v23";
+const ADMIN_CACHE_KEY = "meutreino:admin-cache:v26";
 const REQUEST_TIMEOUT_MS = 20000;
-const PLAN_NAME = "Meu Treino Pro";
-const PLAN_INSTALLMENTS = 12;
-const PLAN_INSTALLMENT_CENTS = 2999;
+const { PLAN_NAME, PLAN_INSTALLMENTS, PLAN_INSTALLMENT_CENTS, INSTALLMENT_INTERVAL_DAYS } = BILLING;
 const ONLINE_WINDOW_MS = 150000;
 const STATUS_LABELS = Object.freeze({
   active: "Ativo",
@@ -91,66 +92,21 @@ function formatDate(value, includeTime = false) {
 }
 
 function timestampMillis(value) {
-  if (!value) return null;
-  if (typeof value.toMillis === "function") return value.toMillis();
-  if (typeof value.toDate === "function") return value.toDate().getTime();
-  const numeric = Number(value);
-  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+  return BILLING.toMillis(value);
 }
 
-function addUtcMonths(value, months) {
-  const source = new Date(value);
-  const day = source.getUTCDate();
-  const result = new Date(Date.UTC(source.getUTCFullYear(), source.getUTCMonth() + months, 1, 12));
-  const lastDay = new Date(Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0, 12)).getUTCDate();
-  result.setUTCDate(Math.min(day, lastDay));
-  return result.getTime();
+function formatCurrency(cents = 0) {
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format((Number(cents) || 0) / 100);
 }
 
-function createBillingSchedule(startAt = Date.now()) {
+function createBillingSchedule() {
   const { Timestamp } = state.firestore;
-  return {
-    plan: "pro",
-    planName: PLAN_NAME,
-    amountCents: PLAN_INSTALLMENT_CENTS,
-    totalInstallments: PLAN_INSTALLMENTS,
-    startedAt: Timestamp.fromMillis(startAt),
-    installments: Array.from({ length: PLAN_INSTALLMENTS }, (_, index) => ({
-      number: index + 1,
-      amountCents: PLAN_INSTALLMENT_CENTS,
-      dueAt: Timestamp.fromMillis(addUtcMonths(startAt, index)),
-      status: "pending",
-      paidAt: null,
-      pixCode: "",
-      qrCodeUrl: "",
-    })),
-  };
+  return BILLING.serializeForFirestore(BILLING.createSchedule(), (milliseconds) => Timestamp.fromMillis(milliseconds));
 }
 
 function serializeBilling(value) {
   if (!value || !Array.isArray(value.installments)) return null;
-  return {
-    plan: "pro",
-    planName: PLAN_NAME,
-    amountCents: PLAN_INSTALLMENT_CENTS,
-    totalInstallments: PLAN_INSTALLMENTS,
-    startedAt: timestampMillis(value.startedAt),
-    installments: value.installments.slice(0, PLAN_INSTALLMENTS).map((installment, index) => ({
-      number: Number(installment?.number) || index + 1,
-      amountCents: Number(installment?.amountCents) || PLAN_INSTALLMENT_CENTS,
-      dueAt: timestampMillis(installment?.dueAt),
-      status: installment?.status === "paid" ? "paid" : "pending",
-      paidAt: timestampMillis(installment?.paidAt),
-      pixCode: String(installment?.pixCode || ""),
-      qrCodeUrl: String(installment?.qrCodeUrl || ""),
-    })),
-  };
-}
-
-function inputDate(value) {
-  const date = value && Number(value) > Date.now() ? new Date(Number(value)) : new Date(Date.now() + 30 * 86400000);
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
-  return local.toISOString().slice(0, 10);
+  return BILLING.normalizeSchedule(value);
 }
 
 function formatLastSeen(user) {
@@ -165,8 +121,8 @@ function formatLastSeen(user) {
 
 function friendlyError(error) {
   const code = String(error?.code || "");
-  if (code.includes("permission-denied")) return "O Firestore negou a operação. Confirme se sua conta está em admins e se as regras firestore.rules da versão atual foram publicadas.";
-  if (code.includes("not-found")) return `O banco Firestore ${firestoreDatabaseId || "(default)"} não foi encontrado. Crie o banco com esse Database ID no projeto Firebase treino-346bb.`;
+  if (code.includes("permission-denied")) return "O Firestore negou a operação. Publique as regras desta versão e confirme seu UID em admin/{uid} com valor=true ou admins/{uid} com enabled=true.";
+  if (code.includes("not-found")) return `O Firestore não encontrou o banco configurado (${firestoreDatabaseId || "default"}). Neste projeto ele deve ser default, sem parênteses, no Firebase treino-346bb.`;
   if (code.includes("auth/unauthorized-domain")) return "Autorize este domínio em Firebase Authentication > Settings > Authorized domains.";
   if (code.includes("auth/popup-blocked")) return "Permita pop-ups para este site e tente novamente.";
   if (code.includes("unauthenticated")) return "Sua sessão expirou. Entre novamente.";
@@ -279,7 +235,7 @@ function renderDenied() {
         <div class="login-logo">${icon("lock")}</div>
         <p class="eyebrow">ACESSO NEGADO</p>
         <h1>Conta sem permissão</h1>
-        <p>${escapeHtml(state.error || "Cadastre esta conta na coleção admins do Firestore.")}</p>
+        <p>${escapeHtml(state.error || "Cadastre este UID em admin com valor=true ou em admins com enabled=true.")}</p>
         ${uid ? `<small class="login-note">UID para cadastrar: ${escapeHtml(uid)}</small>` : ""}
         <button class="ghost-button" data-action="sign-out">Entrar com outra conta</button>
       </div>
@@ -451,22 +407,27 @@ function openDeleteModal(user) {
 }
 
 function openBillingModal(user) {
-  const installments = Array.isArray(user.billing?.installments) ? user.billing.installments : [];
+  const billing = user.billing ? BILLING.normalizeSchedule(user.billing) : null;
+  const installments = billing?.installments || [];
   const paid = installments.filter((installment) => installment.status === "paid").length;
+  const scheduleInfo = billing?.firstPaymentAt
+    ? `Data-base: ${formatDate(billing.firstPaymentAt)} • vencimentos a cada ${INSTALLMENT_INTERVAL_DAYS} dias.`
+    : `A parcela 1 registra a data do primeiro pagamento. As demais vencem a cada ${INSTALLMENT_INTERVAL_DAYS} dias a partir dela.`;
   const list = installments.length
     ? installments.map((installment) => {
       const isPaid = installment.status === "paid";
-      return `<div class="admin-installment"><span>${String(installment.number).padStart(2, "0")}</span><div><strong>Parcela ${installment.number}</strong><small>${formatDate(installment.dueAt)} • R$ 29,99</small></div><b class="${isPaid ? "paid" : "pending"}">${isPaid ? "PAGA" : "PENDENTE"}</b><button type="button" class="action-button ${isPaid ? "action-warning" : "action-primary"}" data-action="set-installment" data-uid="${escapeHtml(user.uid)}" data-installment="${installment.number}" data-status="${isPaid ? "pending" : "paid"}">${isPaid ? "Reabrir" : "Marcar paga"}</button></div>`;
+      return `<div class="admin-installment"><span>${String(installment.number).padStart(2, "0")}</span><div><strong>Parcela ${installment.number}</strong><small>Vencimento: ${formatDate(installment.dueAt)} • ${formatCurrency(installment.amountCents)}</small></div><b class="${isPaid ? "paid" : "pending"}">${isPaid ? "PAGA" : "PENDENTE"}</b><button type="button" class="action-button ${isPaid ? "action-warning" : "action-primary"}" data-action="set-installment" data-uid="${escapeHtml(user.uid)}" data-installment="${installment.number}" data-status="${isPaid ? "pending" : "paid"}">${isPaid ? "Reabrir" : "Marcar paga"}</button></div>`;
     }).join("")
-    : `<div class="billing-empty"><strong>Parcelamento ainda não criado</strong><span>Crie as 12 parcelas para controlá-las manualmente.</span><button type="button" class="action-button action-primary" data-action="create-billing" data-uid="${escapeHtml(user.uid)}">Criar parcelas</button></div>`;
+    : `<div class="billing-empty"><strong>Parcelamento ainda não criado</strong><span>Crie as ${PLAN_INSTALLMENTS} parcelas. Os vencimentos serão definidos quando a parcela 1 for paga.</span><button type="button" class="action-button action-primary" data-action="create-billing" data-uid="${escapeHtml(user.uid)}">Criar parcelas</button></div>`;
 
   modalShell(`
     <div data-billing-modal data-uid="${escapeHtml(user.uid)}">
       <div class="modal-head"><div><p class="eyebrow">FINANCEIRO</p><h2>Parcelas do usuário</h2></div><button type="button" class="icon-button" data-action="close-modal" aria-label="Fechar">${icon("close")}</button></div>
       <div class="modal-user"><strong>${escapeHtml(user.displayName || "Usuário sem nome")}</strong><span>${escapeHtml(user.email || "")}</span></div>
-      <div class="plan-display"><span>PLANO ÚNICO<strong>${PLAN_NAME}</strong></span><b>${paid}/12 PAGAS</b></div>
+      <div class="plan-display"><span>PLANO ÚNICO<strong>${PLAN_NAME}</strong><small>${PLAN_INSTALLMENTS} parcelas de ${formatCurrency(PLAN_INSTALLMENT_CENTS)}</small></span><b>${paid}/${PLAN_INSTALLMENTS} PAGAS</b></div>
+      <p class="billing-schedule-info">${escapeHtml(scheduleInfo)}</p>
       <div class="admin-installment-list">${list}</div>
-      <p class="modal-copy">O QR Code Pix continuará em configuração até você vincular a conta de recebimento. Aqui você já pode controlar manualmente os pagamentos.</p>
+      <p class="modal-copy">O QR Code Pix continua separado da regra de vencimentos e pode ser configurado depois, sem alterar o calendário das parcelas.</p>
       <div class="modal-actions"><button type="button" data-action="close-modal">Fechar</button></div>
     </div>`);
 }
@@ -560,19 +521,12 @@ async function setInstallment({ user, installmentNumber, status }) {
     const snapshot = await transaction.get(reference);
     if (!snapshot.exists()) throw new Error("Usuário não encontrado.");
     const access = snapshot.data();
-    const billing = access.billing && Array.isArray(access.billing.installments)
+    const current = access.billing && Array.isArray(access.billing.installments)
       ? access.billing
       : createBillingSchedule();
-    const installments = [...billing.installments];
-    const index = installments.findIndex((item, itemIndex) => Number(item?.number || itemIndex + 1) === installmentNumber);
-    if (index < 0) throw new Error("Parcela não encontrada.");
-    installments[index] = {
-      ...installments[index],
-      status,
-      paidAt: status === "paid" ? Timestamp.now() : null,
-    };
+    const updated = BILLING.applyInstallmentStatus(current, installmentNumber, status, { now: Date.now() });
     transaction.set(reference, {
-      billing: { ...billing, plan: "pro", planName: PLAN_NAME, installments },
+      billing: BILLING.serializeForFirestore(updated, (milliseconds) => Timestamp.fromMillis(milliseconds)),
       updatedAt: serverTimestamp(),
       updatedBy: state.user.uid,
     }, { merge: true });

@@ -4,6 +4,17 @@ const { getFirestore, FieldValue, Timestamp } = require("firebase-admin/firestor
 const { defineString } = require("firebase-functions/params");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const {
+  PLAN_ID,
+  PLAN_NAME,
+  PLAN_INSTALLMENTS: INSTALLMENT_COUNT,
+  PLAN_INSTALLMENT_CENTS: INSTALLMENT_AMOUNT_CENTS,
+  toMillis: timestampMillis,
+  normalizeSchedule,
+  createSchedule,
+  applyInstallmentStatus,
+  toFirestore,
+} = require("./billing");
 
 initializeApp();
 setGlobalOptions({ region: "southamerica-east1", maxInstances: 10 });
@@ -13,69 +24,18 @@ const auth = getAuth();
 const db = getFirestore("default");
 const ONLINE_WINDOW_MS = 150000;
 const VALID_ACCESS_STATUSES = new Set(["active", "paused", "cancelled"]);
-const PLAN_ID = "pro";
-const PLAN_NAME = "Meu Treino Pro";
-const INSTALLMENT_COUNT = 12;
-const INSTALLMENT_AMOUNT_CENTS = 2999;
 
 function normalizedEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
 
-function timestampMillis(value) {
-  if (!value) return null;
-  if (typeof value.toMillis === "function") return value.toMillis();
-  if (typeof value.toDate === "function") return value.toDate().getTime();
-  const parsed = new Date(value).getTime();
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function addUtcMonths(value, months) {
-  const source = new Date(value);
-  const day = source.getUTCDate();
-  const result = new Date(Date.UTC(source.getUTCFullYear(), source.getUTCMonth() + months, 1, 12));
-  const lastDay = new Date(Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0, 12)).getUTCDate();
-  result.setUTCDate(Math.min(day, lastDay));
-  return result.getTime();
-}
-
-function createBillingSchedule(startAt = Date.now()) {
-  return {
-    plan: PLAN_ID,
-    planName: PLAN_NAME,
-    amountCents: INSTALLMENT_AMOUNT_CENTS,
-    totalInstallments: INSTALLMENT_COUNT,
-    startedAt: Timestamp.fromMillis(startAt),
-    installments: Array.from({ length: INSTALLMENT_COUNT }, (_, index) => ({
-      number: index + 1,
-      amountCents: INSTALLMENT_AMOUNT_CENTS,
-      dueAt: Timestamp.fromMillis(addUtcMonths(startAt, index)),
-      status: "pending",
-      paidAt: null,
-      pixCode: "",
-      qrCodeUrl: "",
-    })),
-  };
+function createBillingSchedule() {
+  return toFirestore(createSchedule(), Timestamp);
 }
 
 function serializeBilling(value) {
-  const installments = Array.isArray(value?.installments) ? value.installments : [];
-  return {
-    plan: PLAN_ID,
-    planName: PLAN_NAME,
-    amountCents: INSTALLMENT_AMOUNT_CENTS,
-    totalInstallments: INSTALLMENT_COUNT,
-    startedAt: timestampMillis(value?.startedAt),
-    installments: installments.slice(0, INSTALLMENT_COUNT).map((installment, index) => ({
-      number: Number(installment?.number) || index + 1,
-      amountCents: Number(installment?.amountCents) || INSTALLMENT_AMOUNT_CENTS,
-      dueAt: timestampMillis(installment?.dueAt),
-      status: installment?.status === "paid" ? "paid" : "pending",
-      paidAt: timestampMillis(installment?.paidAt),
-      pixCode: String(installment?.pixCode || ""),
-      qrCodeUrl: String(installment?.qrCodeUrl || ""),
-    })),
-  };
+  if (!value || !Array.isArray(value.installments)) return null;
+  return normalizeSchedule(value);
 }
 
 function publicError(error) {
@@ -242,8 +202,7 @@ exports.adminSetAccess = onCall(async (request) => {
     const accessDocument = db.collection("access").doc(uid);
     const existingSnapshot = await accessDocument.get();
     const existing = existingSnapshot.exists ? existingSnapshot.data() : {};
-    let expiresAt = timestampMillis(request.data?.expiresAt) || timestampMillis(existing.expiresAt);
-    if (status === "active" && !expiresAt) expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
+    const expiresAt = null;
 
     const payload = {
       uid,
@@ -251,14 +210,14 @@ exports.adminSetAccess = onCall(async (request) => {
       displayName: user.displayName || "",
       plan: PLAN_ID,
       status,
-      expiresAt: expiresAt ? Timestamp.fromMillis(expiresAt) : null,
+      expiresAt: null,
       updatedAt: FieldValue.serverTimestamp(),
       updatedBy: admin.uid,
     };
     if (!existingSnapshot.exists) payload.createdAt = FieldValue.serverTimestamp();
     if (status === "active") payload.activatedAt = FieldValue.serverTimestamp();
     if (status === "active" && !Array.isArray(existing?.billing?.installments)) {
-      payload.billing = createBillingSchedule(Date.now());
+      payload.billing = createBillingSchedule();
     }
 
     await Promise.all([
@@ -301,18 +260,16 @@ exports.adminSetInstallment = onCall(async (request) => {
       const access = snapshot.data();
       const billing = access.billing && Array.isArray(access.billing.installments)
         ? access.billing
-        : createBillingSchedule(Date.now());
-      const installments = [...billing.installments];
-      const index = installments.findIndex((item, itemIndex) => Number(item?.number || itemIndex + 1) === installmentNumber);
-      if (index < 0) throw new HttpsError("not-found", "Parcela não encontrada.");
-      updatedInstallment = {
-        ...installments[index],
-        status,
-        paidAt: status === "paid" ? Timestamp.now() : null,
-      };
-      installments[index] = updatedInstallment;
+        : createBillingSchedule();
+      let updated;
+      try {
+        updated = applyInstallmentStatus(billing, installmentNumber, status, Date.now());
+      } catch (error) {
+        throw new HttpsError("failed-precondition", error.message || "Não foi possível atualizar a parcela.");
+      }
+      updatedInstallment = updated.installments[installmentNumber - 1];
       transaction.set(accessDocument, {
-        billing: { ...billing, plan: PLAN_ID, planName: PLAN_NAME, installments },
+        billing: toFirestore(updated, Timestamp),
         updatedAt: FieldValue.serverTimestamp(),
         updatedBy: admin.uid,
       }, { merge: true });

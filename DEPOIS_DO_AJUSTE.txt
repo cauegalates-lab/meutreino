@@ -1,27 +1,9 @@
-CORRECAO DO ERRO NOT-FOUND
+LEIA PRIMEIRO: PASSO_A_PASSO_FINAL.txt
 
-O print do Firebase mostra que o Database ID existente e: default
-SEM parenteses.
-
-Isso e diferente do Database ID especial (default).
-A versao anterior estava tentando abrir (default), por isso o Firestore respondia not-found.
-
-ESTA VERSAO JA FOI CORRIGIDA PARA USAR:
-Database ID: default
-
-O QUE FAZER:
-1. No Firebase Console, abra Firestore Database.
-2. No seletor do topo, deixe selecionado o banco default.
-3. Abra a aba Seguranca desse banco.
-4. Copie o conteudo de firestore.rules deste projeto e publique nessa aba.
-5. Substitua os arquivos no GitHub por esta versao.
-6. Aguarde a Vercel publicar.
-7. Teste em janela anonima ou use Ctrl+Shift+R.
-
-IMPORTANTE:
-- NAO crie outro Firestore.
-- NAO troque o Database ID para (default).
-- Seu banco atual e o banco nomeado default.
-
-COMPATIBILIDADE DO ADMIN:
-O print mostra a colecao admin (singular) e campo valor=true. Esta versao aceita esse cadastro antigo e tambem o formato novo admins/{uid} com enabled=true.
+Resumo:
+- Firestore Database ID: default (sem parênteses).
+- Não crie outro banco.
+- Publique o firestore.rules desta versão no banco default.
+- Seu admin/{UID} com valor=true continua válido.
+- Financeiro: 12 parcelas de R$ 29,90 e vencimentos a cada 30 dias após a data-base do primeiro pagamento.
+- Cache/PWA atualizado para v26.

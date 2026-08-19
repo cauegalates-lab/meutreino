@@ -94,6 +94,14 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Compatibilidade com o cadastro administrativo já existente no projeto:
+    // admin/{uid} com o campo valor = true. O próprio usuário pode ler somente
+    // seu documento para a tela validar o acesso; escrita continua bloqueada.
+    match /admin/{adminId} {
+      allow read: if isAdmin() || isSelf(adminId);
+      allow write: if false;
+    }
+
     match /adminAudit/{document=**} {
       allow read, create: if isAdmin();
       allow update, delete: if false;
