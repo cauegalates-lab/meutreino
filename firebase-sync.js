@@ -29,6 +29,122 @@ function mergeById(remoteItems = [], localItems = []) {
   return [...merged.values()];
 }
 
+function routineId(routine) {
+  return String(routine?.id || `routine-${Date.now()}`).replaceAll("/", "-");
+}
+
+function routineColor(group) {
+  return ({
+    "Peito e braços": "#ff8a3d",
+    "Costas e braços": "#a7f432",
+    "Inferiores": "#65d9ff",
+    "Ombros": "#ad92ff",
+    "Full body": "#ffda5c",
+    "Condicionamento": "#70e3c3",
+    "Personalizado": "#a7f432",
+  })[String(group || "Personalizado")] || "#a7f432";
+}
+
+function rawRoutine(routine) {
+  return {
+    id: routineId(routine),
+    name: String(routine?.name || "Meu treino").slice(0, 80),
+    group: String(routine?.group || "Personalizado").slice(0, 80),
+    day: String(routine?.day || "SEG"),
+    duration: Math.max(0, Number(routine?.duration) || 0),
+    exercises: (routine?.exercises || []).flatMap((preset) => {
+      if (!Array.isArray(preset) || !String(preset[0] || "").trim()) return [];
+      const note = String(preset[1] || "");
+      const restMatch = note.match(/Descanso\s+(\d+)s/i);
+      const setMatch = note.match(/^(\d+)\s+séries/i);
+      return [{
+        name: String(preset[0]).slice(0, 120),
+        sets: Math.max(1, Number(preset[7]) || Number(setMatch?.[1]) || 3),
+        reps: Math.max(1, Number(preset[3]) || 10),
+        weight: Math.max(0, Number(preset[2]) || 0),
+        restSeconds: Math.max(15, Number(restMatch?.[1]) || 90),
+      }];
+    }),
+  };
+}
+
+function inflateRoutine(data = {}, fallbackId = "") {
+  const id = String(data.id || fallbackId || `routine-${Date.now()}`);
+  const group = String(data.group || "Personalizado");
+  const exercises = Array.isArray(data.exercises)
+    ? data.exercises.flatMap((exercise) => {
+        if (Array.isArray(exercise)) return [exercise];
+        const name = String(exercise?.name || "").trim();
+        if (!name) return [];
+        const sets = Math.max(1, Number(exercise.sets) || 3);
+        const reps = Math.max(1, Number(exercise.reps) || 10);
+        const weight = Math.max(0, Number(exercise.weight) || 0);
+        const rest = Math.max(15, Number(exercise.restSeconds) || 90);
+        return [[name, `${sets} séries alvo • Descanso ${rest}s`, weight, reps, "Primeiro treino", "Base inicial", null, sets]];
+      })
+    : [];
+  return {
+    id,
+    custom: true,
+    name: String(data.name || "Meu treino"),
+    group,
+    day: String(data.day || "SEG"),
+    color: routineColor(group),
+    duration: Math.max(10, Number(data.duration) || 50),
+    exercises,
+  };
+}
+
+function rawWorkout(workout) {
+  const id = workoutId(workout);
+  const completedAt = String(workout?.completedAt || workout?.date || new Date().toISOString());
+  const startedAt = String(workout?.startedAt || "");
+  const payload = {
+    id,
+    templateId: String(workout?.templateId || ""),
+    name: String(workout?.name || "Treino").slice(0, 80),
+    date: completedAt,
+    exercises: (workout?.exercises || []).flatMap((exercise) => {
+      const name = String(exercise?.name || "").trim();
+      if (!name) return [];
+      return [{
+        name: name.slice(0, 120),
+        sets: (exercise.sets || []).map((set, index) => ({
+          series: Math.max(1, Number(set?.series) || index + 1),
+          reps: Math.max(0, Number(set?.reps) || 0),
+          weight: Math.max(0, Number(set?.weight) || 0),
+        })),
+      }];
+    }),
+  };
+  if (startedAt) payload.startedAt = startedAt;
+  return payload;
+}
+
+function inflateWorkout(data = {}, fallbackId = "") {
+  const id = String(data.id || fallbackId || workoutId(data));
+  const completedAt = String(data.completedAt || data.date || new Date().toISOString());
+  return {
+    id,
+    templateId: String(data.templateId || ""),
+    name: String(data.name || "Treino"),
+    startedAt: String(data.startedAt || ""),
+    completedAt,
+    exercises: (data.exercises || []).flatMap((exercise) => {
+      const name = String(exercise?.name || "").trim();
+      if (!name) return [];
+      return [{
+        name,
+        sets: (exercise.sets || []).map((set, index) => ({
+          series: Math.max(1, Number(set?.series) || index + 1),
+          reps: Math.max(0, Number(set?.reps) || 0),
+          weight: Math.max(0, Number(set?.weight) || 0),
+        })),
+      }];
+    }),
+  };
+}
+
 function isUntouchedLegacyProfile(profile) {
   if (!profile || typeof profile !== "object") return false;
   return Number(profile.weight) === 82
@@ -69,7 +185,7 @@ async function main() {
     signInWithPopup,
     signOut: firebaseSignOut,
   } = authSdk;
-  const { initializeFirestore, doc, collection, getDoc, getDocs, setDoc, writeBatch, serverTimestamp } = firestoreSdk;
+  const { initializeFirestore, doc, collection, getDoc, getDocs, setDoc, writeBatch, serverTimestamp, deleteField } = firestoreSdk;
 
   const firebaseApp = initializeApp(firebaseConfig);
   if (String(appCheckSiteKey || "").trim()) {
@@ -95,8 +211,10 @@ async function main() {
   let hydrated = false;
   let hydrationUserId = null;
   let knownRemoteWorkoutIds = new Set();
+  let knownRemoteRoutineIds = new Set();
   let queue = Promise.resolve();
   let syncTimer = null;
+  const pendingSyncScopes = new Set();
   let accessPollTimer = null;
   let accessCheckInFlight = false;
   let presenceTimer = null;
@@ -114,6 +232,7 @@ async function main() {
 
   const settingsRef = (uid) => doc(db, "users", uid, "app", "settings");
   const workoutsRef = (uid) => collection(db, "users", uid, "workouts");
+  const routinesRef = (uid) => collection(db, "users", uid, "routines");
   const accessRef = (uid) => doc(db, "access", uid);
   const presenceRef = (uid) => doc(db, "presence", uid);
 
@@ -188,23 +307,17 @@ async function main() {
   }
 
   async function commitWorkoutDiff(snapshot, uid) {
-    const localIds = new Set(snapshot.history.map(workoutId));
-    const operations = [];
-
-    snapshot.history.forEach((workout) => {
-      const id = workoutId(workout);
-      if (!knownRemoteWorkoutIds.has(id)) operations.push({ type: "set", id, workout });
-    });
-    knownRemoteWorkoutIds.forEach((id) => {
-      if (!localIds.has(id)) operations.push({ type: "delete", id });
-    });
+    const localDocuments = (snapshot.history || []).map(rawWorkout);
+    const localIds = new Set(localDocuments.map((workout) => workout.id));
+    const operations = localDocuments.map((workout) => ({ type: "set", id: workout.id, data: workout }));
+    knownRemoteWorkoutIds.forEach((id) => { if (!localIds.has(id)) operations.push({ type: "delete", id }); });
 
     for (let offset = 0; offset < operations.length; offset += 400) {
       const batch = writeBatch(db);
       operations.slice(offset, offset + 400).forEach((operation) => {
         const ref = doc(db, "users", uid, "workouts", operation.id);
         if (operation.type === "delete") batch.delete(ref);
-        else batch.set(ref, { ...operation.workout, ownerId: uid });
+        else batch.set(ref, operation.data);
       });
       await batch.commit();
     }
@@ -212,7 +325,26 @@ async function main() {
     if (currentUser?.uid === uid) knownRemoteWorkoutIds = localIds;
   }
 
-  async function pushLocalState(expectedUid = currentUser?.uid) {
+  async function commitRoutineDiff(snapshot, uid) {
+    const localDocuments = (snapshot.customTemplates || []).map(rawRoutine);
+    const localIds = new Set(localDocuments.map((routine) => routine.id));
+    const operations = localDocuments.map((routine) => ({ type: "set", id: routine.id, data: routine }));
+    knownRemoteRoutineIds.forEach((id) => { if (!localIds.has(id)) operations.push({ type: "delete", id }); });
+
+    for (let offset = 0; offset < operations.length; offset += 400) {
+      const batch = writeBatch(db);
+      operations.slice(offset, offset + 400).forEach((operation) => {
+        const ref = doc(db, "users", uid, "routines", operation.id);
+        if (operation.type === "delete") batch.delete(ref);
+        else batch.set(ref, operation.data);
+      });
+      await batch.commit();
+    }
+
+    if (currentUser?.uid === uid) knownRemoteRoutineIds = localIds;
+  }
+
+  async function pushLocalState(expectedUid = currentUser?.uid, scope = "all") {
     if (!expectedUid || currentUser?.uid !== expectedUid || !accessAllowed) return;
     if (!navigator.onLine) {
       setStatus("offline", "Offline • alterações seguras neste aparelho");
@@ -221,15 +353,17 @@ async function main() {
 
     setStatus("syncing", "Salvando alterações");
     const snapshot = bridge.getSnapshot();
-    await setDoc(settingsRef(expectedUid), {
-      ownerId: expectedUid,
-      profile: snapshot.profile,
-      customTemplates: snapshot.customTemplates,
-      updatedAt: snapshot.updatedAt || Date.now(),
-      serverUpdatedAt: serverTimestamp(),
-      schemaVersion: 2,
-    });
-    await commitWorkoutDiff(snapshot, expectedUid);
+    if (scope === "all" || scope === "profile") {
+      await setDoc(settingsRef(expectedUid), {
+        ownerId: expectedUid,
+        profile: snapshot.profile,
+        updatedAt: snapshot.updatedAt || Date.now(),
+        serverUpdatedAt: serverTimestamp(),
+        schemaVersion: 3,
+      }, { merge: true });
+    }
+    if (scope === "all" || scope === "templates") await commitRoutineDiff(snapshot, expectedUid);
+    if (scope === "all" || scope === "history") await commitWorkoutDiff(snapshot, expectedUid);
     if (currentUser?.uid === expectedUid) setStatus("synced", "Dados salvos");
   }
 
@@ -242,28 +376,40 @@ async function main() {
 
     setStatus("syncing", "Buscando seus dados");
     const local = bridge.getSnapshot();
-    const [settingsSnapshot, workoutsSnapshot] = await Promise.all([getDoc(settingsRef(expectedUid)), getDocs(workoutsRef(expectedUid))]);
+    const [settingsSnapshot, routinesSnapshot, workoutsSnapshot] = await Promise.all([
+      getDoc(settingsRef(expectedUid)),
+      getDocs(routinesRef(expectedUid)),
+      getDocs(workoutsRef(expectedUid)),
+    ]);
     if (currentUser?.uid !== expectedUid) return;
     const remoteSettings = settingsSnapshot.exists() ? settingsSnapshot.data() : null;
-    const remoteHistory = workoutsSnapshot.docs.map((item) => item.data());
+    const remoteRoutines = routinesSnapshot.docs.map((item) => inflateRoutine(item.data(), item.id));
+    const legacyRoutines = remoteRoutines.length ? [] : (remoteSettings?.customTemplates || []).map((item) => inflateRoutine(item, item?.id));
+    const remoteHistory = workoutsSnapshot.docs.map((item) => inflateWorkout(item.data(), item.id));
+    knownRemoteRoutineIds = new Set(routinesSnapshot.docs.map((item) => item.id));
     knownRemoteWorkoutIds = new Set(workoutsSnapshot.docs.map((item) => item.id));
 
     const remoteUpdatedAt = Number(remoteSettings?.updatedAt) || 0;
     const localIsNewer = Number(local.updatedAt) > remoteUpdatedAt;
-    const remoteTemplates = remoteSettings?.customTemplates || [];
     const remoteProfileIsOnlyOldDemo = Number(remoteSettings?.schemaVersion || 1) < 2
       && remoteHistory.length === 0
-      && remoteTemplates.length === 0
+      && remoteRoutines.length === 0
+      && legacyRoutines.length === 0
       && isUntouchedLegacyProfile(remoteSettings?.profile);
     const remoteProfile = remoteProfileIsOnlyOldDemo ? null : remoteSettings?.profile;
     const profile = localIsNewer ? local.profile : (remoteProfile || local.profile);
-    const customTemplates = mergeById(remoteTemplates, local.customTemplates || []);
-    const history = mergeById(remoteHistory, local.history || []).sort((a, b) => new Date(b.completedAt || 0) - new Date(a.completedAt || 0));
+    const localRoutines = (local.customTemplates || []).map((item) => inflateRoutine(rawRoutine(item), item?.id));
+    const localHistory = (local.history || []).map((item) => inflateWorkout(rawWorkout(item), workoutId(item)));
+    const customTemplates = mergeById([...remoteRoutines, ...legacyRoutines], localRoutines);
+    const history = mergeById(remoteHistory, localHistory).sort((a, b) => new Date(b.completedAt || 0) - new Date(a.completedAt || 0));
     const updatedAt = Math.max(Number(local.updatedAt) || 0, remoteUpdatedAt);
 
     bridge.applySnapshot({ profile, customTemplates, history, updatedAt });
     hydrated = true;
-    await pushLocalState(expectedUid);
+    await pushLocalState(expectedUid, "all");
+    if (settingsSnapshot.exists() && Array.isArray(remoteSettings?.customTemplates)) {
+      await setDoc(settingsRef(expectedUid), { customTemplates: deleteField(), schemaVersion: 3 }, { merge: true });
+    }
   }
 
   function timestampMillis(value) {
@@ -471,6 +617,7 @@ async function main() {
       hydrated = false;
       hydrationUserId = null;
       knownRemoteWorkoutIds = new Set();
+      knownRemoteRoutineIds = new Set();
       bridge.activateUser(userInfo(user));
       observeAccess(user);
     } else if (!accessPollTimer && !accessCheckInFlight) {
@@ -514,6 +661,7 @@ async function main() {
       hydrated = false;
       hydrationUserId = null;
       knownRemoteWorkoutIds = new Set();
+      knownRemoteRoutineIds = new Set();
       setStatus("local", "Entre com Google para acessar seus dados", {
         accessResolved: false,
         access: { status: "checking", allowed: false, plan: "", expiresAt: null, billing: null },
@@ -530,11 +678,18 @@ async function main() {
 
   window.GymCloud = Object.freeze({ signIn, signOut, retryAccess });
 
-  window.addEventListener("gym:data-changed", () => {
+  window.addEventListener("gym:data-changed", (event) => {
     if (!currentUser || !accessAllowed) return;
     const uid = currentUser.uid;
+    const scope = ["profile", "templates", "history"].includes(event.detail?.scope) ? event.detail.scope : "all";
+    pendingSyncScopes.add(scope);
     clearTimeout(syncTimer);
-    syncTimer = setTimeout(() => enqueue(() => hydrated ? pushLocalState(uid) : hydrateFromCloud(uid)), 550);
+    syncTimer = setTimeout(() => {
+      const scopes = [...pendingSyncScopes];
+      pendingSyncScopes.clear();
+      const nextScope = scopes.length === 1 && !scopes.includes("all") ? scopes[0] : "all";
+      enqueue(() => hydrated ? pushLocalState(uid, nextScope) : hydrateFromCloud(uid));
+    }, 550);
   });
 
   window.addEventListener("offline", () => {
@@ -549,7 +704,7 @@ async function main() {
     if (accessAllowed) {
       const uid = currentUser.uid;
       updatePresence(document.visibilityState === "visible", uid);
-      enqueue(() => hydrated ? pushLocalState(uid) : hydrateFromCloud(uid));
+      enqueue(() => hydrated ? pushLocalState(uid, "all") : hydrateFromCloud(uid));
     }
     checkAccess(currentUser, { quiet: accessAllowed, register: !accessAllowed });
   });
@@ -579,6 +734,7 @@ async function main() {
     hydrated = false;
     hydrationUserId = null;
     knownRemoteWorkoutIds = new Set();
+    knownRemoteRoutineIds = new Set();
     setStatus("local", "Entre com Google para acessar seus dados", {
       accessResolved: false,
       access: { status: "checking", allowed: false, plan: "", expiresAt: null, billing: null },

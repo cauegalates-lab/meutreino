@@ -198,3 +198,22 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 @media (min-width:540px){.gym-app{padding:18px 0}.phone-shell{min-height:calc(100dvh - 36px);border:1px solid #252b2e;border-radius:30px;box-shadow:0 35px 100px rgba(0,0,0,.62),0 0 0 5px #090b0c}.bottom-nav,.finish-bar{bottom:18px;border-radius:0 0 29px 29px}.rest-timer{bottom:102px}}
 @media (max-width:370px){.screen-page{padding-left:12px;padding-right:12px}.today-content h2{font-size:23px}.today-meta{gap:10px}.metric-card{padding:11px 8px}.metric-card strong{font-size:16px}.progress-bottom-grid{grid-template-columns:1fr}.exercise-footer strong small{display:none}.set-table-head,.set-row{grid-template-columns:34px 1.4fr .82fr 30px}.set-row{margin-left:7px;margin-right:7px}.weight-control{grid-template-columns:19px 1fr 19px}.weight-control>button{width:19px;height:21px}.set-row input{width:31px}.record-row em{display:none}.exercise-history-row{grid-template-columns:37px 1fr auto}.exercise-history-row>em{display:none}.coach-card em{display:none}.builder-mini-grid{grid-template-columns:1fr 1fr}.builder-modal{padding-left:13px;padding-right:13px}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.001ms!important;animation-duration:.001ms!important}}
+
+/* v27: formulário de treino integrado à página e feedback tátil visual mobile. */
+.workout-builder-inline{margin:0 -16px 16px;padding:16px 16px 18px;border-top:1px solid #202729;border-bottom:1px solid #202729;background:#0b0e0f;animation:page-enter .18s ease both}
+.workout-builder-inline form{width:100%;margin:0}.inline-builder-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:15px}.inline-builder-heading>div{min-width:0}.inline-builder-heading h2{margin:2px 0 5px;font-size:21px;letter-spacing:-.04em}.inline-builder-heading>div>p:not(.eyebrow){max-width:330px;margin:0;color:var(--muted);font-size:12px;line-height:1.5}.inline-builder-close{display:grid;width:32px;height:32px;flex:0 0 auto;place-items:center;border:1px solid var(--line);border-radius:50%;background:#14191a;color:#929b9f;font-size:20px;line-height:1;cursor:pointer}.builder-button.is-open{border-color:#30383b;background:#121617;color:#cbd1d3}.workouts-page.builder-open .page-header{margin-bottom:12px}
+.routine-edit{display:grid;place-items:center;width:27px;height:27px;border:1px solid rgba(101,216,255,.2);border-radius:50%;background:rgba(101,216,255,.055);color:#7fcce8;cursor:pointer}.routine-edit .icon{width:13px;height:13px}
+.workout-header{grid-template-columns:auto minmax(0,1fr)}.workout-header>div{text-align:left}
+
+:where(button:not(:disabled),[role="button"],[data-action]:not(input):not(textarea):not(select),.training-day-toggle>span,.settings-toggle-row){touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+@media (hover:none) and (pointer:coarse){
+  :where(button:not(:disabled),[role="button"],[data-action]:not(input):not(textarea):not(select),.training-day-toggle>span,.settings-toggle-row){transition:transform .07s ease,opacity .07s ease,filter .07s ease,background-color .07s ease,border-color .07s ease}
+  :where(button:not(:disabled),[role="button"],[data-action]:not(input):not(textarea):not(select),.training-day-toggle>span,.settings-toggle-row):active{transform:scale(.972);opacity:.82;filter:brightness(1.08)}
+  .nav-item:active{transform:scale(.94)}
+  .nav-add:active{transform:scale(.92)}
+  .routine-play:active,.routine-edit:active,.routine-delete:active,.round-button:active{transform:scale(.9)}
+  .exercise-queue-item:active{transform:scale(.985);opacity:.88}
+}
+
+@media (max-width:430px){.workout-builder-inline{margin-left:-14px;margin-right:-14px;padding-left:14px;padding-right:14px}.routine-controls{gap:3px}.routine-edit,.routine-delete{width:25px;height:25px}.routine-play{width:34px;height:34px}}
+@media (max-width:370px){.workout-builder-inline{margin-left:-12px;margin-right:-12px;padding-left:12px;padding-right:12px}.routine-info div{font-size:10px}.routine-edit,.routine-delete{width:24px;height:24px}.routine-play{width:32px;height:32px}}

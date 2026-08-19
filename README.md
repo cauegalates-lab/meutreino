@@ -1,4 +1,4 @@
-# Meu Treino — versão refatorada v26
+# Meu Treino — versão refatorada v27
 
 Aplicativo de treino com login Google/Firebase, sincronização no Firestore, painel administrativo e controle manual de 12 parcelas.
 
@@ -15,7 +15,17 @@ Aplicativo de treino com login Google/Firebase, sincronização no Firestore, pa
 
 ## O que mudou nesta versão
 
-### 1. Validação administrativa corrigida na raiz
+### 1. Treinos mobile, CRUD e dados brutos
+
+- O formulário de **Meus treinos** agora fica integrado diretamente à página, sem card/modal flutuante.
+- Rotinas personalizadas podem ser criadas, editadas e excluídas.
+- `users/{uid}/routines/{routineId}` guarda a configuração bruta das rotinas.
+- `users/{uid}/workouts/{workoutId}` guarda somente dados brutos do treino concluído: identificação do treino, data, exercícios e séries com repetições/carga.
+- Volume, carga máxima, recordes, evolução e gráficos são calculados em `app.js`; não são gravados nos documentos de treino.
+- O botão de três pontos sem função foi removido do treino em execução.
+- Elementos tocáveis receberam feedback visual consistente para uso mobile.
+
+### 2. Validação administrativa corrigida na raiz
 
 A central aceita os dois formatos abaixo, sem exigir duplicação de cadastro:
 
@@ -24,7 +34,7 @@ A central aceita os dois formatos abaixo, sem exigir duplicação de cadastro:
 
 O erro `Missing or insufficient permissions` acontecia porque a aplicação lia `admin/{UID}`, mas as regras anteriores não tinham uma regra direta para permitir que o próprio UID lesse esse documento. `firestore.rules` agora cobre explicitamente os dois formatos, mantendo escrita bloqueada nos documentos de administrador.
 
-### 2. Regra financeira centralizada
+### 3. Regra financeira centralizada
 
 A lógica de parcelamento deixou de ficar espalhada pelo app e pelo painel. O módulo `billing.js` concentra:
 
@@ -38,7 +48,7 @@ A lógica de parcelamento deixou de ficar espalhada pelo app e pelo painel. O m�
 
 A pasta `functions/` usa a mesma regra de negócio em um módulo próprio do ambiente Node (`functions/billing.js`), para que eventual uso de Cloud Functions mantenha o mesmo comportamento.
 
-### 3. Vencimentos
+### 4. Vencimentos
 
 Antes do primeiro pagamento, as datas aparecem como **A definir**.
 
@@ -54,7 +64,7 @@ Não é permitido marcar uma parcela posterior como paga antes da parcela 1, por
 
 Se a parcela 1 for reaberta, a data-base só pode ser removida se nenhuma parcela posterior continuar marcada como paga.
 
-### 4. Financeiro e QR Code
+### 5. Financeiro e QR Code
 
 O card do plano mostra somente:
 
@@ -62,7 +72,7 @@ O card do plano mostra somente:
 
 O valor total foi removido. O QR Code/Pix continua independente da lógica dos vencimentos e pode ser configurado posteriormente.
 
-### 5. Interface
+### 6. Interface
 
 A interface foi suavizada para reduzir a sensação de vários cards independentes:
 
@@ -73,9 +83,9 @@ A interface foi suavizada para reduzir a sensação de vários cards independent
 - parcelas organizadas como lista contínua com divisores discretos;
 - mesma direção visual aplicada ao painel administrativo.
 
-### 6. Cache/PWA
+### 7. Cache/PWA
 
-O cache foi atualizado para `v26` e o novo `billing.js` foi incluído no service worker. Isso evita que o navegador continue carregando a lógica antiga depois do deploy.
+O cache foi atualizado para `v27` e o novo `billing.js` foi incluído no service worker. Isso evita que o navegador continue carregando a lógica antiga depois do deploy.
 
 ## Arquivos principais
 
@@ -87,7 +97,7 @@ O cache foi atualizado para `v26` e o novo `billing.js` foi incluído no service
 - `admin/admin.js` — central administrativa.
 - `admin/admin.css` — visual da central.
 - `firestore.rules` — regras de segurança, incluindo compatibilidade com `admin/{UID}`.
-- `service-worker.js` — cache/PWA v26.
+- `service-worker.js` — cache/PWA v27.
 - `PASSO_A_PASSO_FINAL.txt` — instruções exatas para publicar e testar.
 
 ## Segurança do admin

@@ -1,0 +1,27 @@
+MEU TREINO — AJUSTES V27
+========================
+
+1. MEUS TREINOS
+- Formulário de novo treino integrado diretamente à página.
+- O formulário também permite editar rotinas personalizadas existentes.
+- Não usa mais card/modal flutuante para criar treino.
+- Exclusão continua com confirmação.
+
+2. TREINO EM EXECUÇÃO
+- Removido o botão de três pontos, pois não possuía ação útil.
+
+3. FIRESTORE
+- Rotinas personalizadas: users/{uid}/routines/{routineId}
+- Treinos concluídos: users/{uid}/workouts/{workoutId}
+- Criação, edição e exclusão usam documentos por ID, evitando duplicação.
+- Documentos de treino concluído guardam apenas dados brutos: identificação do treino, data, exercícios, séries, repetições e carga.
+- Não são gravados totalVolume, carga máxima, recordes, evolução ou dados de gráfico.
+- Volume, recordes, carga máxima e evolução são calculados no app a partir das séries.
+- Há migração de compatibilidade para rotinas antigas que estavam dentro de users/{uid}/app/settings.customTemplates.
+
+4. MOBILE
+- Feedback visual de toque adicionado a botões, navegação, controles, ícones clicáveis, exercícios da fila e toggles.
+- Efeito discreto de escala/opacidade, aplicado somente a elementos interativos.
+
+5. PWA
+- Cache atualizado para v27.

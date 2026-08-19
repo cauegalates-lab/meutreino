@@ -1,4 +1,4 @@
-const CACHE = "meu-treino-v26-refactor-financial-admin";
+const CACHE = "meu-treino-v27-mobile-raw-sync";
 const ASSETS = ["./","./index.html","./styles.css","./app.js","./billing.js","./firebase-sync.js","./firebase-config.js","./manifest.webmanifest","./admin/","./admin/index.html","./admin/admin.css","./admin/admin.js","./assets/icon.svg","./assets/icon-192.png","./assets/icon-512.png","./assets/apple-touch-icon.png","./assets/hero-costas.png"];
 
 self.addEventListener("install", (event) => {

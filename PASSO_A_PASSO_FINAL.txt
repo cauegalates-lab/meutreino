@@ -1,4 +1,4 @@
-MEU TREINO — PASSO A PASSO FINAL (v26)
+MEU TREINO — PASSO A PASSO FINAL (v27)
 =======================================
 
 O QUE JÁ ESTÁ CORRIGIDO NESTA VERSÃO
@@ -42,6 +42,17 @@ O QUE JÁ ESTÁ CORRIGIDO NESTA VERSÃO
    - menos sombras;
    - financeiro integrado ao fundo da página;
    - parcelas em lista contínua, sem um card grande envolvendo tudo.
+
+7. Treinos e Firestore:
+   - formulário de novo/editar treino integrado à tela Meus Treinos;
+   - botão de três pontos sem função removido do treino em execução;
+   - rotinas em users/{uid}/routines/{routineId};
+   - treinos concluídos em users/{uid}/workouts/{workoutId};
+   - os documentos de treino não salvam volume, recordes, carga máxima ou evolução;
+   - esses indicadores são calculados automaticamente pelo app a partir das séries.
+
+8. Mobile:
+   - botões, ícones, menus e demais controles tocáveis têm feedback visual de toque.
 
 
 O QUE VOCÊ PRECISA FAZER AGORA
@@ -121,7 +132,7 @@ Primeiro teste em uma janela anônima/privada.
 Depois, no navegador principal, faça uma atualização forçada ou limpe os dados do site
 caso ele ainda mostre a versão antiga.
 
-O service worker desta versão usa cache v26.
+O service worker desta versão usa cache v27.
 
 
 PASSO 7 — TESTE O APLICATIVO NORMAL

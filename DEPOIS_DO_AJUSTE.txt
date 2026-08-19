@@ -6,4 +6,4 @@ Resumo:
 - Publique o firestore.rules desta versão no banco default.
 - Seu admin/{UID} com valor=true continua válido.
 - Financeiro: 12 parcelas de R$ 29,90 e vencimentos a cada 30 dias após a data-base do primeiro pagamento.
-- Cache/PWA atualizado para v26.
+- Cache/PWA atualizado para v27.

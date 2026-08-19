@@ -4,7 +4,7 @@ const PROFILE_KEY = "meu-treino-perfil-v2";
 const SYNC_META_KEY = "meu-treino-sync-meta-v1";
 const LOCAL_OWNER_KEY = "meu-treino-owner-v1";
 const INSTALL_ONBOARDING_KEY = "meu-treino-install-onboarding-v1";
-const DATA_SCHEMA_VERSION = 2;
+const DATA_SCHEMA_VERSION = 3;
 const BILLING = globalThis.MeuTreinoBilling;
 if (!BILLING) throw new Error("Módulo financeiro não carregado.");
 const { PLAN_NAME, PLAN_INSTALLMENTS, PLAN_INSTALLMENT_CENTS, INSTALLMENT_INTERVAL_DAYS } = BILLING;
@@ -131,6 +131,7 @@ const state = {
   active: null,
   metric: "carga",
   progressExercise: "Supino reto",
+  workoutEditor: null,
   timerId: null,
   restId: null,
   restSeconds: 0,
@@ -504,6 +505,7 @@ function activateCloudUser(userOrUid) {
   state.active = null;
   state.restSeconds = 0;
   state.progressExercise = "";
+  state.workoutEditor = null;
   try { localStorage.setItem(LOCAL_OWNER_KEY, uid); } catch {}
 }
 
@@ -576,6 +578,19 @@ function formatPaymentDate(value) {
 function formatDuration(seconds) {
   const minutes = Math.floor(seconds / 60);
   return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function workoutVolume(workout) {
+  return (workout?.exercises || []).reduce((total, exercise) => total + (exercise.sets || []).reduce((sum, set) => {
+    return sum + (Number(set.weight) || 0) * (Number(set.reps) || 0);
+  }, 0), 0);
+}
+
+function workoutDurationSeconds(workout) {
+  const startedAt = new Date(workout?.startedAt || 0).getTime();
+  const completedAt = new Date(workout?.completedAt || 0).getTime();
+  if (startedAt > 0 && completedAt >= startedAt) return Math.max(0, Math.round((completedAt - startedAt) / 1000));
+  return Math.max(0, Number(workout?.durationSeconds) || 0);
 }
 
 function dateKey(date) {
@@ -795,7 +810,7 @@ function renderHome() {
   if (!state.selectedDay) state.selectedDay = today;
   const selected = currentWeekTemplate();
   const monthlyNew = currentMonthWorkouts();
-  const monthVolume = monthlyNew.reduce((sum, item) => sum + (Number(item.totalVolume) || 0), 0);
+  const monthVolume = monthlyNew.reduce((sum, item) => sum + workoutVolume(item), 0);
   const streak = workoutStreak();
   const completedDates = new Set(state.history.map((item) => dateKey(new Date(item.completedAt))));
   const insight = getCoachInsight();
@@ -842,13 +857,15 @@ function renderWorkouts() {
   const month = new Intl.DateTimeFormat("pt-BR", { month: "long" }).format(new Date());
   const recent = state.history.slice(0,4);
   const routineTemplates = allTemplates();
-  viewRoot.innerHTML = `<div class="screen-page workouts-page">
-    <header class="page-header"><div><p class="eyebrow">SUA ROTINA</p><h1>Meus treinos</h1><p>Planeje a semana e registre cada evolução.</p></div><button class="builder-button" data-action="open-builder">${icon("plus")} Novo</button></header>
+  const editorOpen = Boolean(state.workoutEditor);
+  viewRoot.innerHTML = `<div class="screen-page workouts-page ${editorOpen ? "builder-open" : ""}">
+    <header class="page-header"><div><p class="eyebrow">SUA ROTINA</p><h1>Meus treinos</h1><p>Planeje a semana e registre cada evolução.</p></div><button class="builder-button ${editorOpen ? "is-open" : ""}" data-action="${editorOpen ? "close-builder" : "open-builder"}">${icon(editorOpen ? "arrow-left" : "plus")} ${editorOpen ? "Voltar" : "Novo"}</button></header>
+    ${editorOpen ? renderWorkoutBuilderInline() : ""}
     <div class="month-strip"><div>${icon("calendar")}<span>${escapeHtml(month[0].toUpperCase()+month.slice(1))}</span></div><strong>${currentMonthWorkouts().length} treinos</strong></div>
     <section class="routine-list">
       ${routineTemplates.length ? routineTemplates.map((template,index) => {
         const day = week.find((item) => item.key === template.day);
-        return `<article class="routine-card"><div class="routine-day" style="--accent:${template.color}"><span>${template.day}</span><strong>${day?.date ?? index+3}</strong></div><div class="routine-info"><span>${escapeHtml(template.group)}${template.custom ? ' • <b>PERSONALIZADO</b>' : ''}</span><h2>${escapeHtml(template.name)}</h2><div>${icon("dumbbell")} ${template.exercises.length} exercícios ${icon("clock")} ${template.duration} min</div></div><div class="routine-controls">${template.custom ? `<button class="routine-delete" data-action="ask-delete-template" data-index="${index}" aria-label="Excluir ${escapeHtml(template.name)}">${icon("trash")}</button>` : ""}<button class="routine-play" data-action="start-template" data-index="${index}" aria-label="Iniciar ${escapeHtml(template.name)}">${icon("play")}</button></div></article>`;
+        return `<article class="routine-card"><div class="routine-day" style="--accent:${template.color}"><span>${template.day}</span><strong>${day?.date ?? index+3}</strong></div><div class="routine-info"><span>${escapeHtml(template.group)}${template.custom ? ' • <b>PERSONALIZADO</b>' : ''}</span><h2>${escapeHtml(template.name)}</h2><div>${icon("dumbbell")} ${template.exercises.length} exercícios ${icon("clock")} ${template.duration} min</div></div><div class="routine-controls">${template.custom ? `<button class="routine-edit" data-action="edit-template" data-id="${escapeHtml(template.id)}" aria-label="Editar ${escapeHtml(template.name)}">${icon("edit")}</button><button class="routine-delete" data-action="ask-delete-template" data-index="${index}" aria-label="Excluir ${escapeHtml(template.name)}">${icon("trash")}</button>` : ""}<button class="routine-play" data-action="start-template" data-index="${index}" aria-label="Iniciar ${escapeHtml(template.name)}">${icon("play")}</button></div></article>`;
       }).join("") : `<div class="empty-list">${icon("dumbbell")}<span><strong>Sua rotina começa aqui</strong><small>Toque em Novo para criar seu primeiro treino.</small></span></div>`}
     </section>
     <div class="history-title"><h2>Histórico recente</h2>${icon("history")}</div>
@@ -858,7 +875,8 @@ function renderWorkouts() {
 
 function historyRow(workout) {
   const date = new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short" }).format(new Date(workout.completedAt));
-  return `<article class="history-row"><span class="history-check">${icon("check")}</span><div><strong>${escapeHtml(workout.name)}</strong><small>${date} • ${Math.max(1,Math.round((workout.durationSeconds||0)/60))} min</small></div><span>${formatNumber(workout.totalVolume)} kg</span></article>`;
+  const duration = workoutDurationSeconds(workout);
+  return `<article class="history-row"><span class="history-check">${icon("check")}</span><div><strong>${escapeHtml(workout.name)}</strong><small>${date}${duration ? ` • ${Math.max(1,Math.round(duration/60))} min` : ""}</small></div><span>${formatNumber(workoutVolume(workout))} kg</span></article>`;
 }
 
 function progressExerciseNames() {
@@ -1050,7 +1068,7 @@ function renderActiveWorkout() {
     .map((item, index) => ({ item, index }))
     .filter(({ index }) => index !== exerciseIndex);
   viewRoot.innerHTML = `<div class="active-workout-screen">
-    <header class="workout-header"><button class="round-button" data-action="back-workout" aria-label="Voltar">${icon("arrow-left")}</button><div><h1>${escapeHtml(active.template.name)}</h1><span>${completedSets} de ${totalSets} séries concluídas</span></div><button class="round-button" aria-label="Mais opções">${icon("more")}</button></header>
+    <header class="workout-header"><button class="round-button" data-action="back-workout" aria-label="Voltar">${icon("arrow-left")}</button><div><h1>${escapeHtml(active.template.name)}</h1><span>${completedSets} de ${totalSets} séries concluídas</span></div></header>
     <section class="timer-block"><span class="timer-icon">${icon("clock")}</span><strong id="workout-elapsed">${formatDuration(active.elapsed)}</strong><small>TEMPO DE TREINO</small></section>
     <div class="workout-progress"><i style="width:${progress}%"></i></div>
     ${exerciseMediaPanel(exercise, exerciseIndex, active.exercises.length)}
@@ -1139,10 +1157,17 @@ function finishWorkout() {
     return;
   }
   const volume = liveVolume();
+  const completedAt = new Date().toISOString();
   const record = {
-    id: Date.now(), name: active.template.name, group: active.template.group,
-    completedAt: new Date().toISOString(), durationSeconds: active.elapsed, totalVolume: volume,
-    exercises: active.exercises.map((exercise)=>({ name: exercise.name, note: exercise.noteText || "", sets: exercise.sets.filter((set)=>set.done).map((set)=>({ weight:Number(set.weight)||0, reps:Number(set.reps)||0 })) })).filter((exercise)=>exercise.sets.length),
+    id: Date.now(),
+    templateId: String(active.template.id || ""),
+    name: active.template.name,
+    startedAt: new Date(active.startedAt).toISOString(),
+    completedAt,
+    exercises: active.exercises.map((exercise)=>({
+      name: exercise.name,
+      sets: exercise.sets.filter((set)=>set.done).map((set, index)=>({ series:index + 1, weight:Number(set.weight)||0, reps:Number(set.reps)||0 })),
+    })).filter((exercise)=>exercise.sets.length),
   };
   state.history.unshift(record);
   persistHistory();
@@ -1165,13 +1190,40 @@ function showToast(message) {
   showToast.timer = setTimeout(()=>{ toastRoot.innerHTML=""; },2600);
 }
 
-function builderExerciseRow(index) {
+function builderExerciseValues(preset = null) {
   const defaultRest = Math.max(15, Number(state.profile.settings?.defaultRest) || 90);
-  return `<div class="builder-exercise" data-builder-row><div class="builder-exercise-title"><span>Exercício ${index + 1}</span><button type="button" data-action="remove-builder-exercise" aria-label="Remover exercício">×</button></div><input class="field-wide" name="exercise_name" placeholder="Ex.: Supino reto" autocomplete="off"><div class="builder-mini-grid"><label>Séries<input name="exercise_sets" type="number" min="1" max="10" value="3"></label><label>Reps<input name="exercise_reps" type="number" min="1" max="100" value="10"></label><label>Carga kg<input name="exercise_weight" type="number" min="0" step="0.5" value="0"></label><label>Descanso<input name="exercise_rest" type="number" min="15" step="15" value="${defaultRest}"></label></div></div>`;
+  if (!preset) return { name: "", sets: 3, reps: 10, weight: 0, rest: defaultRest };
+  const note = String(preset[1] || "");
+  const restMatch = note.match(/Descanso\s+(\d+)s/i);
+  return {
+    name: String(preset[0] || ""),
+    sets: Math.max(1, Number(preset[7]) || Number(note.match(/^(\d+)\s+séries/i)?.[1]) || 3),
+    reps: Math.max(1, Number(preset[3]) || 10),
+    weight: Math.max(0, Number(preset[2]) || 0),
+    rest: Math.max(15, Number(restMatch?.[1]) || defaultRest),
+  };
 }
 
-function showWorkoutBuilder() {
-  overlayRoot.innerHTML = `<div class="modal-backdrop builder-backdrop"><form class="builder-modal" id="workout-builder-form"><button class="modal-close" type="button" data-action="close-modal" aria-label="Fechar">×</button><p class="eyebrow">NOVO TREINO</p><h2>Monte sua rotina</h2><p>Defina o dia, os exercícios e a base de carga. Você poderá ajustar tudo durante o treino.</p><div class="builder-form-grid"><label class="wide">Nome do treino<input name="workout_name" required maxlength="36" placeholder="Ex.: Upper A"></label><label>Dia<select name="workout_day">${WEEK_DAYS.map((day) => `<option ${day === state.selectedDay ? "selected" : ""}>${day}</option>`).join("")}</select></label><label>Duração<input name="workout_duration" type="number" min="10" max="180" value="50"></label><label class="wide">Grupo<select name="workout_group"><option>Peito e braços</option><option>Costas e braços</option><option>Inferiores</option><option>Ombros</option><option>Full body</option><option>Condicionamento</option><option>Personalizado</option></select></label></div><div class="builder-section-head"><strong>Exercícios</strong><button type="button" data-action="add-builder-exercise">${icon("plus")} Adicionar</button></div><div id="builder-exercise-list">${builderExerciseRow(0)}${builderExerciseRow(1)}${builderExerciseRow(2)}</div><button class="primary-button builder-save" type="submit"><span class="button-label">Salvar treino</span><span class="button-icon">${icon("check")}</span></button></form></div>`;
+function builderExerciseRow(index, preset = null) {
+  const values = builderExerciseValues(preset);
+  return `<div class="builder-exercise" data-builder-row><div class="builder-exercise-title"><span>Exercício ${index + 1}</span><button type="button" data-action="remove-builder-exercise" aria-label="Remover exercício">×</button></div><input class="field-wide" name="exercise_name" value="${escapeHtml(values.name)}" placeholder="Ex.: Supino reto" autocomplete="off"><div class="builder-mini-grid"><label>Séries<input name="exercise_sets" type="number" min="1" max="10" value="${values.sets}"></label><label>Reps<input name="exercise_reps" type="number" min="1" max="100" value="${values.reps}"></label><label>Carga kg<input name="exercise_weight" type="number" min="0" step="0.5" value="${values.weight}"></label><label>Descanso<input name="exercise_rest" type="number" min="15" step="15" value="${values.rest}"></label></div></div>`;
+}
+
+function renderWorkoutBuilderInline() {
+  const editingId = state.workoutEditor === "new" ? "" : String(state.workoutEditor || "");
+  const template = editingId ? state.customTemplates.find((item) => item.id === editingId) : null;
+  const day = template?.day || state.selectedDay;
+  const group = template?.group || "Personalizado";
+  const exercises = template?.exercises?.length ? template.exercises : [null, null, null];
+  const groups = ["Peito e braços", "Costas e braços", "Inferiores", "Ombros", "Full body", "Condicionamento", "Personalizado"];
+  return `<section class="workout-builder-inline" id="workout-builder-inline" aria-label="${template ? "Editar treino" : "Novo treino"}"><form id="workout-builder-form" data-template-id="${escapeHtml(editingId)}"><div class="inline-builder-heading"><div><p class="eyebrow">${template ? "EDITAR TREINO" : "NOVO TREINO"}</p><h2>${template ? "Ajuste sua rotina" : "Monte sua rotina"}</h2><p>Defina exercícios, séries, repetições e carga base diretamente na página.</p></div><button type="button" class="inline-builder-close" data-action="close-builder" aria-label="Fechar formulário">×</button></div><div class="builder-form-grid"><label class="wide">Nome do treino<input name="workout_name" required maxlength="36" value="${escapeHtml(template?.name || "")}" placeholder="Ex.: Upper A"></label><label>Dia<select name="workout_day">${WEEK_DAYS.map((item) => `<option ${item === day ? "selected" : ""}>${item}</option>`).join("")}</select></label><label>Duração<input name="workout_duration" type="number" min="10" max="180" value="${Math.max(10, Number(template?.duration) || 50)}"></label><label class="wide">Grupo<select name="workout_group">${groups.map((item) => `<option ${item === group ? "selected" : ""}>${item}</option>`).join("")}</select></label></div><div class="builder-section-head"><strong>Exercícios</strong><button type="button" data-action="add-builder-exercise">${icon("plus")} Adicionar</button></div><div id="builder-exercise-list">${exercises.map((preset, index) => builderExerciseRow(index, preset)).join("")}</div><button class="primary-button builder-save" type="submit"><span class="button-label">${template ? "Salvar alterações" : "Salvar treino"}</span><span class="button-icon">${icon("check")}</span></button></form></section>`;
+}
+
+function showWorkoutBuilder(templateId = "") {
+  state.view = "treinos";
+  state.workoutEditor = templateId || "new";
+  renderWorkouts();
+  requestAnimationFrame(() => document.getElementById("workout-builder-inline")?.scrollIntoView({ behavior: "smooth", block: "start" }));
 }
 
 function showDeleteTemplateConfirmation(index) {
@@ -1248,7 +1300,7 @@ document.addEventListener("click", async (event) => {
   const action = button.dataset.action;
   if (action === "install-app") { await requestAppInstall(); return; }
   if (action === "continue-browser") { rememberInstallOnboarding(); overlayRoot.innerHTML = ""; render(); return; }
-  if (action === "nav") { state.view = button.dataset.view; render(); window.scrollTo({top:0,behavior:"smooth"}); }
+  if (action === "nav") { state.view = button.dataset.view; if (state.view !== "treinos") state.workoutEditor = null; render(); window.scrollTo({top:0,behavior:"smooth"}); }
   if (action === "select-day") { state.selectedDay = button.dataset.day; renderHome(); }
   if (action === "start-day") startWorkout(currentWeekTemplate());
   if (action === "quick-start") {
@@ -1259,6 +1311,8 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "start-template") startWorkout(allTemplates()[Number(button.dataset.index)]);
   if (action === "open-builder") showWorkoutBuilder();
+  if (action === "close-builder") { state.workoutEditor = null; renderWorkouts(); }
+  if (action === "edit-template") showWorkoutBuilder(button.dataset.id);
   if (action === "add-builder-exercise") {
     const list = document.getElementById("builder-exercise-list");
     if (list) list.insertAdjacentHTML("beforeend", builderExerciseRow(list.querySelectorAll("[data-builder-row]").length));
@@ -1271,6 +1325,7 @@ document.addEventListener("click", async (event) => {
   if (action === "ask-delete-template") showDeleteTemplateConfirmation(Number(button.dataset.index));
   if (action === "delete-template") {
     state.customTemplates = state.customTemplates.filter((template) => template.id !== button.dataset.id);
+    if (state.workoutEditor === button.dataset.id) state.workoutEditor = null;
     persistCustomTemplates(); overlayRoot.innerHTML = ""; renderWorkouts(); showToast("Treino personalizado removido.");
   }
   if (action === "change-avatar") document.getElementById("profile-photo-input")?.click();
@@ -1374,14 +1429,18 @@ document.addEventListener("submit", (event) => {
     if (!exercises.length) { showToast("Adicione pelo menos um exercício."); return; }
     const group = String(data.get("workout_group") || "Personalizado");
     const colors = { "Peito e braços":"#ff8a3d", "Costas e braços":"#a7f432", "Inferiores":"#65d9ff", "Ombros":"#ad92ff", "Full body":"#ffda5c", "Condicionamento":"#70e3c3", "Personalizado":"#a7f432" };
-    const template = { id:`custom-${Date.now()}`, custom:true, name:String(data.get("workout_name")||"Meu treino").trim().slice(0,36), group, day:String(data.get("workout_day")||"SEG"), color:colors[group]||"#a7f432", duration:Math.max(10,Number(data.get("workout_duration"))||50), exercises };
-    state.customTemplates.unshift(template);
+    const editingId = String(form.dataset.templateId || "");
+    const existing = editingId ? state.customTemplates.find((item) => item.id === editingId) : null;
+    const template = { id:existing?.id || `custom-${Date.now()}`, custom:true, name:String(data.get("workout_name")||"Meu treino").trim().slice(0,36), group, day:String(data.get("workout_day")||"SEG"), color:colors[group]||"#a7f432", duration:Math.max(10,Number(data.get("workout_duration"))||50), exercises };
+    if (existing) state.customTemplates = state.customTemplates.map((item) => item.id === existing.id ? template : item);
+    else state.customTemplates.unshift(template);
     if (!state.profile.trainingDays.includes(template.day)) {
       const trainingDays = WEEK_DAYS.filter((day) => [...state.profile.trainingDays, template.day].includes(day));
       state.profile = normalizeProfile({ ...state.profile, trainingDays });
       persistProfile();
     }
-    persistCustomTemplates(); overlayRoot.innerHTML=""; state.view="treinos"; render(); showToast("Treino personalizado criado.");
+    state.workoutEditor = null;
+    persistCustomTemplates(); state.view="treinos"; render(); showToast(existing ? "Treino atualizado." : "Treino personalizado criado.");
   }
   if (event.target.id === "profile-form") {
     event.preventDefault();
