@@ -10,7 +10,7 @@ setGlobalOptions({ region: "southamerica-east1", maxInstances: 10 });
 
 const ADMIN_EMAIL = defineString("ADMIN_EMAIL");
 const auth = getAuth();
-const db = getFirestore();
+const db = getFirestore("default");
 const ONLINE_WINDOW_MS = 150000;
 const VALID_ACCESS_STATUSES = new Set(["active", "paused", "cancelled"]);
 const PLAN_ID = "pro";
@@ -92,8 +92,12 @@ async function assertAdmin(request) {
   if (request.auth.token.email_verified !== true) throw new HttpsError("permission-denied", "A conta administradora precisa ter o e-mail verificado.");
   const configuredEmail = normalizedEmail(ADMIN_EMAIL.value());
   const hasClaim = request.auth.token.admin === true;
-  const adminSnapshot = await db.collection("admins").doc(uid).get();
-  const registeredAdmin = adminSnapshot.exists && adminSnapshot.data()?.enabled === true;
+  const [adminSnapshot, legacyAdminSnapshot] = await Promise.all([
+    db.collection("admins").doc(uid).get(),
+    db.collection("admin").doc(uid).get(),
+  ]);
+  const registeredAdmin = (adminSnapshot.exists && adminSnapshot.data()?.enabled === true)
+    || (legacyAdminSnapshot.exists && legacyAdminSnapshot.data()?.valor === true);
   const isBootstrapAdmin = Boolean(configuredEmail && email === configuredEmail);
 
   if (!hasClaim && !registeredAdmin && !isBootstrapAdmin) {

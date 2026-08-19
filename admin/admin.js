@@ -479,9 +479,14 @@ function permissionError(message) {
 
 async function assertAdmin() {
   const { db, doc, getDoc } = state.firestore;
-  const snapshot = await getDoc(doc(db, "admins", state.user.uid));
-  if (!snapshot.exists() || snapshot.data()?.enabled !== true) {
-    throw permissionError("Crie no Firestore o documento admins/" + state.user.uid + " com o campo enabled = true.");
+  const [snapshot, legacySnapshot] = await Promise.all([
+    getDoc(doc(db, "admins", state.user.uid)),
+    getDoc(doc(db, "admin", state.user.uid)),
+  ]);
+  const currentAdmin = snapshot.exists() && snapshot.data()?.enabled === true;
+  const legacyAdmin = legacySnapshot.exists() && legacySnapshot.data()?.valor === true;
+  if (!currentAdmin && !legacyAdmin) {
+    throw permissionError("Esta conta não está cadastrada como administradora no Firestore.");
   }
 }
 

@@ -13,8 +13,8 @@ export const firebaseConfig = {
 // Opcional: chave pública de um App Check com reCAPTCHA Enterprise.
 // Deixe vazio até registrar todos os domínios publicados no Firebase App Check.
 // Banco Firestore usado por TODO o projeto (app + painel administrativo).
-// O projeto foi preparado para o banco padrão do Firebase.
-// Se no futuro você usar um banco nomeado, altere SOMENTE este valor.
-export const firestoreDatabaseId = "(default)";
+// Este projeto usa o banco NOMEADO "default" (sem parênteses), conforme o banco existente no Firebase Console.
+// Não trocar por "(default)" neste projeto, pois são IDs diferentes.
+export const firestoreDatabaseId = "default";
 
 export const appCheckSiteKey = "";
